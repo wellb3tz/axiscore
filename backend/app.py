@@ -307,5 +307,12 @@ def add_model():
         print(f"Database error in add_model: {e}")
         return jsonify({"error": "Database error occurred"}), 500
 
+@app.route('/')
+def index():
+    return jsonify({
+        "status": "online",
+        "message": "3D Model Viewer API is running"
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
