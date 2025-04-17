@@ -31,7 +31,7 @@ const HomePage = () => {
 
 const App = () => {
   return (
-    <Router>
+    <Router basename="/axiscore">
       <div className="App">
         <Switch>
           <Route path="/view" exact component={ViewerPage} />
