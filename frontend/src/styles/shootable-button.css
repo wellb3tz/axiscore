@@ -1,0 +1,30 @@
+@keyframes shatter {
+    to {
+      transform: translate(var(--tx), var(--ty)) rotate(var(--rot));
+      opacity: 0;
+    }
+  }
+  
+  .shootable-button {
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .bullet-hole {
+    position: absolute;
+    width: 30px; /* Adjust size as needed */
+    height: 30px; /* Adjust size as needed */
+    background: url('https://i.imgur.com/cz9Dykh.png') no-repeat center center;
+    background-size: contain;
+    pointer-events: none;
+    z-index: 1000;
+    transform: translate(-50%, -50%);
+  }
+  
+  .shatter-piece {
+    position: absolute;
+    width: 5px;
+    height: 5px;
+    background: black;
+    pointer-events: none;
+  }
