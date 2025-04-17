@@ -47,7 +47,7 @@ const getBasename = () => {
   if (process.env.NODE_ENV === 'development') {
     return '';
   }
-  // In production (GitHub Pages), use '/axiscore'
+  // In production (GitHub Pages), use '/axiscore' without trailing slash
   return '/axiscore';
 };
 

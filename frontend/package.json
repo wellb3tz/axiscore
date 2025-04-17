@@ -2,7 +2,7 @@
   "name": "wellb3tz",
   "version": "1.0.0",
   "private": true,
-  "homepage": "https://wellb3tz.github.io/axiscore/",
+  "homepage": "https://wellb3tz.github.io/axiscore",
   "dependencies": {
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "react": "^17.0.2",
