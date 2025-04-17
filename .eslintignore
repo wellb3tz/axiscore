@@ -1,0 +1,11 @@
+# Build output
+/docs/
+/build/
+/dist/
+
+# Node modules
+/node_modules/
+
+# Other build artifacts
+*.min.js
+*.min.css 
