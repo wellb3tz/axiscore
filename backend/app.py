@@ -1,16 +1,14 @@
 import os
 import psycopg2
-from psycopg2.errors import UniqueViolation
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import requests
 import hashlib
 import hmac
-import time
+import json
 from dotenv import load_dotenv
-from flask_socketio import SocketIO, send, emit
-from routes.inventory import inventory_bp
 from flask_cors import CORS
+import urllib.parse
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,12 +17,7 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
-app.config['SECRET_KEY'] = 'your_secret_key'
 jwt = JWTManager(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
-
-# Register blueprints
-app.register_blueprint(inventory_bp)
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -33,47 +26,24 @@ cursor = conn.cursor()
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1]
 
+# Create models table if it doesn't exist
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS models (
+        id SERIAL PRIMARY KEY,
+        telegram_id TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        model_url TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+conn.commit()
+
 def check_telegram_auth(data):
     check_hash = data.pop('hash')
     data_check_string = "\n".join([f"{k}={v}" for k, v in sorted(data.items())])
     secret_key = hashlib.sha256(TELEGRAM_BOT_SECRET.encode()).digest()
     hmac_string = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     return hmac_string == check_hash
-
-@app.route('/register', methods=['POST'])
-def register():
-    try:
-        telegram_id = request.json.get('telegram_id')
-        username = request.json.get('username')
-        password = request.json.get('password')
-        
-        # Allow multiple accounts with the same Telegram ID
-        cursor.execute("INSERT INTO users (telegram_id, username, password) VALUES (%s, %s, %s)", (telegram_id, username, password))
-        conn.commit()
-        return jsonify({"msg": "User registered successfully"}), 200
-    except UniqueViolation:
-        conn.rollback()  # Rollback the transaction on error
-        return jsonify({"msg": "User already exists"}), 400
-    except Exception as e:
-        conn.rollback()  # Rollback the transaction on error
-        return jsonify({"msg": str(e)}), 500
-
-@app.route('/login', methods=['POST'])
-def login():
-    try:
-        username = request.json.get('username')
-        password = request.json.get('password')
-        
-        cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
-        user = cursor.fetchone()
-        if not user:
-            return jsonify({"msg": "Bad username or password"}), 401
-        
-        access_token = create_access_token(identity=username)
-        return jsonify(access_token=access_token), 200
-    except Exception as e:
-        conn.rollback()  # Rollback the transaction on error
-        return jsonify({"msg": str(e)}), 500
 
 @app.route('/telegram_auth', methods=['POST'])
 def telegram_auth():
@@ -82,32 +52,75 @@ def telegram_auth():
         return jsonify({"msg": "Telegram authentication failed"}), 401
 
     telegram_id = auth_data['id']
-    username = auth_data['username']
+    username = auth_data.get('username', '')
 
+    # Check if user exists, create if not
     cursor.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
     user = cursor.fetchone()
     if not user:
-        cursor.execute("INSERT INTO users (telegram_id, username, password) VALUES (%s, %s, %s)", (telegram_id, username, ''))
+        cursor.execute("INSERT INTO users (telegram_id, username, password) VALUES (%s, %s, %s)", 
+                      (telegram_id, username, ''))
         conn.commit()
 
     access_token = create_access_token(identity=telegram_id)
     return jsonify(access_token=access_token), 200
 
-@app.route('/protected', methods=['GET'])
-@jwt_required()
-def protected():
-    current_user = get_jwt_identity()
-    return jsonify(logged_in_as=current_user), 200
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    chat_id = data['message']['chat']['id']
-    text = data['message']['text']
     
-    # Respond to the message
-    response_text = f"Received your message: {text}"
-    send_message(chat_id, response_text)
+    # Extract message data
+    message = data.get('message', {})
+    chat_id = message.get('chat', {}).get('id')
+    text = message.get('text', '')
+    
+    if not chat_id:
+        return jsonify({"status": "error", "msg": "No chat_id found"}), 400
+    
+    # Handle commands
+    if text.startswith('/start'):
+        response_text = "Welcome to 3D Model Viewer Bot! Send me a 3D model URL to view it."
+        send_message(chat_id, response_text)
+    elif text.startswith('/help'):
+        response_text = "This bot allows you to view 3D models. Send a GLTF/GLB model URL to view it."
+        send_message(chat_id, response_text)
+    elif text.startswith('/mymodels'):
+        # Get user's models
+        cursor.execute("SELECT model_name, model_url FROM models WHERE telegram_id = %s", (chat_id,))
+        models = cursor.fetchall()
+        
+        if models:
+            model_list = "\n".join([f"{idx+1}. {model[0]}: {model[1]}" for idx, model in enumerate(models)])
+            response_text = f"Your models:\n{model_list}"
+        else:
+            response_text = "You haven't uploaded any models yet."
+        
+        send_message(chat_id, response_text)
+    elif text.startswith('http') and ('.glb' in text.lower() or '.gltf' in text.lower()):
+        # Process model URL
+        model_url = text.strip()
+        model_name = os.path.basename(urllib.parse.urlparse(model_url).path)
+        
+        # Save model URL to database
+        cursor.execute(
+            "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
+            (chat_id, model_name, model_url)
+        )
+        conn.commit()
+        
+        # Generate viewer URL
+        viewer_url = f"{request.url_root}view?model={urllib.parse.quote(model_url)}"
+        
+        # Send inline keyboard with button to view the model
+        send_inline_button(
+            chat_id, 
+            f"Model '{model_name}' added. Click the button below to view it:", 
+            "View 3D Model", 
+            viewer_url
+        )
+    else:
+        response_text = "Please send a valid 3D model URL (ending with .glb or .gltf)"
+        send_message(chat_id, response_text)
     
     return jsonify({"status": "ok"}), 200
 
@@ -119,35 +132,158 @@ def send_message(chat_id, text):
     }
     requests.post(url, json=payload)
 
-@socketio.on('message')
-def handle_message(msg):
-    send(msg, broadcast=True)
+def send_inline_button(chat_id, text, button_text, button_url):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'reply_markup': {
+            'inline_keyboard': [[{
+                'text': button_text,
+                'url': button_url
+            }]]
+        }
+    }
+    requests.post(url, json=payload)
 
-online_users = {}
+@app.route('/view', methods=['GET'])
+def view_model():
+    model_url = request.args.get('model')
+    if not model_url:
+        return "No model URL provided", 400
+    
+    # Return HTML page with embedded model viewer
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>3D Model Viewer</title>
+        <style>
+            body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
+            #model-container {{ width: 100%; height: 100%; }}
+        </style>
+    </head>
+    <body>
+        <div id="model-container"></div>
+        <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script>
+            const container = document.getElementById('model-container');
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            
+            const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.25;
+            
+            const loader = new THREE.GLTFLoader();
+            loader.load(
+                '{model_url}',
+                (gltf) => {{
+                    // Center model
+                    const box = new THREE.Box3().setFromObject(gltf.scene);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    
+                    gltf.scene.position.x = -center.x;
+                    gltf.scene.position.y = -center.y;
+                    gltf.scene.position.z = -center.z;
+                    
+                    // Adjust camera
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const fov = camera.fov * (Math.PI / 180);
+                    const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                    
+                    camera.position.z = cameraDistance * 1.5;
+                    camera.updateProjectionMatrix();
+                    
+                    scene.add(gltf.scene);
+                }},
+                (xhr) => {{
+                    console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                }},
+                (error) => {{
+                    console.error('Error loading model:', error);
+                    document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
+                }}
+            );
+            
+            window.addEventListener('resize', () => {{
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }});
+            
+            function animate() {{
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }}
+            
+            animate();
+        </script>
+    </body>
+    </html>
+    """
+    
+    return html
 
-@socketio.on('connect')
-def handle_connect():
-    user_id = request.args.get('user_id')
-    online_users[user_id] = request.sid
-    emit_online_users()
+@app.route('/models', methods=['GET'])
+@jwt_required()
+def get_models():
+    telegram_id = get_jwt_identity()
+    
+    cursor.execute("SELECT id, model_name, model_url, created_at FROM models WHERE telegram_id = %s", (telegram_id,))
+    models = cursor.fetchall()
+    
+    result = []
+    for model in models:
+        result.append({
+            "id": model[0],
+            "name": model[1],
+            "url": model[2],
+            "created_at": model[3].isoformat() if model[3] else None
+        })
+    
+    return jsonify(result)
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    user_id = None
-    for uid, sid in online_users.items():
-        if sid == request.sid:
-            user_id = uid
-            break
-    if user_id:
-        del online_users[user_id]
-    emit_online_users()
-
-def emit_online_users():
-    emit('online_users', {'onlineUsers': len(online_users)}, broadcast=True)
-
-@app.route('/online-users', methods=['GET'])
-def get_online_users():
-    return jsonify({"onlineUsers": len(online_users)})
+@app.route('/models', methods=['POST'])
+@jwt_required()
+def add_model():
+    telegram_id = get_jwt_identity()
+    data = request.json
+    
+    model_name = data.get('model_name')
+    model_url = data.get('model_url')
+    
+    if not model_name or not model_url:
+        return jsonify({"msg": "Model name and URL are required"}), 400
+    
+    cursor.execute(
+        "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
+        (telegram_id, model_name, model_url)
+    )
+    model_id = cursor.fetchone()[0]
+    conn.commit()
+    
+    return jsonify({"id": model_id, "msg": "Model added successfully"}), 201
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000)
