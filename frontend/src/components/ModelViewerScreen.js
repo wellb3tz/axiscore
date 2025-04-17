@@ -13,6 +13,11 @@ const ModelViewerScreen = ({ modelUrl }) => {
   useEffect(() => {
     // Setup scene
     const scene = sceneRef.current;
+    scene.background = new THREE.Color(0xf0f0f0);
+    
+    // Add grid helper for empty environment
+    const gridHelper = new THREE.GridHelper(10, 10, 0x888888, 0x444444);
+    scene.add(gridHelper);
     
     // Setup camera
     const camera = new THREE.PerspectiveCamera(
@@ -22,6 +27,7 @@ const ModelViewerScreen = ({ modelUrl }) => {
       1000
     );
     camera.position.z = 5;
+    camera.position.y = 2;
     
     // Setup renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -44,10 +50,21 @@ const ModelViewerScreen = ({ modelUrl }) => {
     controls.dampingFactor = 0.25;
     controls.enableZoom = true;
     
-    // Load the 3D model
-    const loader = new GLTFLoader();
-    
-    if (modelUrl) {
+    // If no modelUrl is provided, just show the empty environment
+    if (!modelUrl) {
+      // Add a small coordinate axis helper
+      const axesHelper = new THREE.AxesHelper(3);
+      scene.add(axesHelper);
+      
+      // Position camera to see the grid
+      camera.position.set(4, 4, 4);
+      camera.lookAt(0, 0, 0);
+      
+      setLoading(false);
+    } else {
+      // Load the 3D model
+      const loader = new GLTFLoader();
+      
       setLoading(true);
       setError(null);
       
@@ -85,9 +102,6 @@ const ModelViewerScreen = ({ modelUrl }) => {
           setLoading(false);
         }
       );
-    } else {
-      setLoading(false);
-      setError('No model URL provided');
     }
     
     // Handle window resize
@@ -132,6 +146,20 @@ const ModelViewerScreen = ({ modelUrl }) => {
       {error && (
         <div className="error-message">
           {error}
+        </div>
+      )}
+      {!modelUrl && !loading && (
+        <div className="empty-environment-message" style={{
+          position: 'absolute',
+          bottom: '20px',
+          left: '20px',
+          color: '#333',
+          background: 'rgba(255, 255, 255, 0.7)',
+          padding: '10px',
+          borderRadius: '5px',
+          fontSize: '14px'
+        }}>
+          No model loaded. Send a 3D model to the bot to view it here.
         </div>
       )}
     </div>

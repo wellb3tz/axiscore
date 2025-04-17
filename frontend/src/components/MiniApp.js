@@ -6,6 +6,7 @@ const MiniApp = () => {
   const { telegramApp, user, isReady, theme } = useTelegram();
   const [modelUrl, setModelUrl] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showExamples, setShowExamples] = useState(false);
   
   // Get model URL from query parameters if available
   useEffect(() => {
@@ -23,33 +24,23 @@ const MiniApp = () => {
       // Enable back button if needed
       if (modelUrl) {
         telegramApp.BackButton.show();
+        telegramApp.BackButton.onClick(() => {
+          // Clear model to show empty environment
+          setModelUrl('');
+        });
       } else {
         telegramApp.BackButton.hide();
       }
       
-      telegramApp.BackButton.onClick(() => {
-        // Clear model or go back to model list
-        setModelUrl('');
-      });
-      
       // Expand the app to full height
       telegramApp.expand();
       
-      // Set the main button for model selection (only if no model is currently displayed)
+      // Set the main button to show example models
       if (!modelUrl) {
-        telegramApp.MainButton.setText('Choose 3D Model');
+        telegramApp.MainButton.setText('Example Models');
         telegramApp.MainButton.show();
         telegramApp.MainButton.onClick(() => {
-          // Here you would implement model selection
-          // For demo purposes, let's use a sample model
-          setLoading(true);
-          
-          // Simulate loading a model
-          setTimeout(() => {
-            setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
-            setLoading(false);
-            telegramApp.MainButton.hide();
-          }, 1000);
+          setShowExamples(!showExamples);
         });
       } else {
         telegramApp.MainButton.hide();
@@ -63,7 +54,7 @@ const MiniApp = () => {
         telegramApp.MainButton.hide();
       }
     };
-  }, [telegramApp, modelUrl]);
+  }, [telegramApp, modelUrl, showExamples]);
   
   if (!isReady) {
     return (
@@ -81,50 +72,85 @@ const MiniApp = () => {
           <div className="tg-spinner"></div>
           <span>Loading model...</span>
         </div>
-      ) : modelUrl ? (
+      ) : (
         <div className="model-viewer-container">
           <ModelViewerScreen modelUrl={modelUrl} />
           
-          {/* Download button */}
-          <div className="download-button-container">
-            <a 
-              href={modelUrl} 
-              download 
-              className="tg-button"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                position: 'absolute',
-                bottom: '20px',
-                right: '20px',
-                zIndex: 100
-              }}
-            >
-              Download Original
-            </a>
-          </div>
-        </div>
-      ) : (
-        <div className="mini-app-welcome">
-          <h2>Welcome to 3D Model Viewer</h2>
-          {user && <p>Hello, {user.first_name}!</p>}
-          <p className="tg-hint">Upload a 3D model in the chat or use the examples below</p>
+          {/* Download button - only show when a model is loaded */}
+          {modelUrl && (
+            <div className="download-button-container">
+              <a 
+                href={modelUrl} 
+                download 
+                className="tg-button"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  position: 'absolute',
+                  bottom: '20px',
+                  right: '20px',
+                  zIndex: 100
+                }}
+              >
+                Download Original
+              </a>
+            </div>
+          )}
           
-          <div className="model-examples">
-            <h3>Example models:</h3>
-            <div className="tg-card" onClick={() => {
-              setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
+          {/* Examples panel - floats above the 3D view */}
+          {showExamples && (
+            <div className="examples-panel" style={{
+              position: 'absolute',
+              top: '20px',
+              left: '20px',
+              right: '20px',
+              background: 'rgba(255, 255, 255, 0.9)',
+              borderRadius: '12px',
+              padding: '15px',
+              zIndex: 100,
+              boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)'
             }}>
-              <div className="model-title">Damaged Helmet</div>
-              <div className="tg-hint">Click to view</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: 0 }}>Example Models</h3>
+                <button 
+                  onClick={() => setShowExamples(false)}
+                  style={{ 
+                    background: 'none', 
+                    border: 'none', 
+                    fontSize: '20px', 
+                    cursor: 'pointer',
+                    color: theme.isDark ? '#fff' : '#333'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div className="model-examples">
+                <div className="tg-card" onClick={() => {
+                  setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
+                  setShowExamples(false);
+                }}>
+                  <div className="model-title">Damaged Helmet</div>
+                  <div className="tg-hint">Click to view</div>
+                </div>
+                <div className="tg-card" onClick={() => {
+                  setModelUrl('https://threejs.org/examples/models/gltf/Duck/glTF/Duck.gltf');
+                  setShowExamples(false);
+                }}>
+                  <div className="model-title">Duck</div>
+                  <div className="tg-hint">Click to view</div>
+                </div>
+                <div className="tg-card" onClick={() => {
+                  setModelUrl('https://threejs.org/examples/models/gltf/Parrot.glb');
+                  setShowExamples(false);
+                }}>
+                  <div className="model-title">Parrot</div>
+                  <div className="tg-hint">Click to view</div>
+                </div>
+              </div>
             </div>
-            <div className="tg-card" onClick={() => {
-              setModelUrl('https://threejs.org/examples/models/gltf/Duck/glTF/Duck.gltf');
-            }}>
-              <div className="model-title">Duck</div>
-              <div className="tg-hint">Click to view</div>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>
