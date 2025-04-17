@@ -447,10 +447,17 @@ def serve_model(model_id, filename):
             print("No database connection available")
             return jsonify({"error": "Server configuration error"}), 500
         
-        # Fetch the model data from the database
+        # Try multiple ways to find the model in the database
+        # First check using model_url = base64://model_id (old format)
         cursor.execute("SELECT content FROM models WHERE model_url = %s", (f"base64://{model_id}",))
         result = cursor.fetchone()
         
+        # If not found, try finding by the model_id in the URL
+        if not result:
+            print(f"Model not found with base64 format, trying URL format")
+            cursor.execute("SELECT content FROM models WHERE model_url LIKE %s", (f"%/models/{model_id}/%",))
+            result = cursor.fetchone()
+            
         if not result:
             print(f"Model not found: {model_id}")
             return jsonify({"error": "Model not found"}), 404
@@ -523,6 +530,11 @@ def miniapp():
     
     # If no file is found, return a simple HTML with error message and model viewer
     model_url = request.args.get('model', '')
+    
+    # Ensure the model_url has a proper host if it's just a path
+    if model_url and model_url.startswith('/'):
+        model_url = f"{BASE_URL}{model_url}"
+        
     return f"""
     <!DOCTYPE html>
     <html>
@@ -532,10 +544,21 @@ def miniapp():
         <style>
             body, html {{ height: 100%; margin: 0; padding: 0; }}
             #viewer {{ width: 100%; height: 100%; }}
+            .error {{ 
+                color: red; 
+                padding: 20px; 
+                position: absolute; 
+                top: 10px; 
+                left: 10px; 
+                background: rgba(255,255,255,0.8); 
+                border-radius: 5px; 
+                display: none; 
+            }}
         </style>
     </head>
     <body>
         <div id="viewer"></div>
+        <div id="error" class="error"></div>
         <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
@@ -562,6 +585,7 @@ def miniapp():
             controls.enableDamping = true;
             
             if (modelUrl) {{
+                console.log('Loading model from URL:', modelUrl);
                 const loader = new THREE.GLTFLoader();
                 loader.load(modelUrl, (gltf) => {{
                     scene.add(gltf.scene);
@@ -579,8 +603,14 @@ def miniapp():
                     camera.position.z = maxDim * 2;
                 }}, undefined, (error) => {{
                     console.error('Error loading model:', error);
-                    alert('Failed to load 3D model: ' + error.message);
+                    const errorDiv = document.getElementById('error');
+                    errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                    errorDiv.style.display = 'block';
                 }});
+            }} else {{
+                const errorDiv = document.getElementById('error');
+                errorDiv.textContent = 'No model URL provided';
+                errorDiv.style.display = 'block';
             }}
             
             function animate() {{
