@@ -447,23 +447,44 @@ def serve_model(model_id, filename):
             print("No database connection available")
             return jsonify({"error": "Server configuration error"}), 500
         
+        # DEBUG: Print all models in the database to help diagnose
+        try:
+            cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models LIMIT 10")
+            all_models = cursor.fetchall()
+            print("Available models in database:")
+            for model in all_models:
+                print(f"  ID: {model[0]}, TG: {model[1]}, Name: {model[2]}, URL: {model[3]}")
+        except Exception as e:
+            print(f"Error listing models: {e}")
+            
         # Try multiple ways to find the model in the database
-        # First check using model_url = base64://model_id (old format)
-        cursor.execute("SELECT content FROM models WHERE model_url = %s", (f"base64://{model_id}",))
+        print(f"Searching with base64 format: base64://{model_id}")
+        cursor.execute("SELECT content, model_url FROM models WHERE model_url = %s", (f"base64://{model_id}",))
         result = cursor.fetchone()
         
         # If not found, try finding by the model_id in the URL
         if not result:
             print(f"Model not found with base64 format, trying URL format")
-            cursor.execute("SELECT content FROM models WHERE model_url LIKE %s", (f"%/models/{model_id}/%",))
+            search_pattern = f"%{model_id}%"
+            cursor.execute("SELECT content, model_url FROM models WHERE model_url LIKE %s", (search_pattern,))
             result = cursor.fetchone()
             
         if not result:
-            print(f"Model not found: {model_id}")
-            return jsonify({"error": "Model not found"}), 404
+            print(f"Model not found with URL pattern {search_pattern}")
+            # Try one more time with exact model_id
+            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (model_id,))
+            large_result = cursor.fetchone()
+            if large_result:
+                print(f"Found model content in large_model_content table")
+                content = large_result[0]
+            else:
+                print(f"Model not found: {model_id}")
+                return jsonify({"error": "Model not found", "model_id": model_id}), 404
+        else:
+            content = result[0]
+            found_url = result[1]
+            print(f"Found model with URL: {found_url}")
             
-        content = result[0]
-        
         # Check if we have content stored
         if not content:
             # Try to get it from large_model_content table
@@ -476,15 +497,20 @@ def serve_model(model_id, filename):
                 print(f"Content found in large_model_content table")
             else:
                 print(f"No content found in either table for model: {model_id}")
-                return jsonify({"error": "Model content not available"}), 404
+                return jsonify({"error": "Model content not available", "model_id": model_id}), 404
         
         # Convert base64 back to binary
         try:
             decoded_content = base64.b64decode(content)
-            print(f"Successfully decoded content, size: {len(decoded_content)} bytes")
+            content_size = len(decoded_content)
+            print(f"Successfully decoded content, size: {content_size} bytes")
+            if content_size < 100:
+                # Log first few bytes to check if valid
+                print(f"WARNING: Very small content ({content_size} bytes): {decoded_content[:20]}")
         except Exception as e:
             print(f"Failed to decode base64 content: {e}")
-            return jsonify({"error": "Failed to process model data"}), 500
+            print(f"First 100 chars of content: {content[:100] if content else 'None'}")
+            return jsonify({"error": "Failed to process model data", "details": str(e)}), 500
         
         # Determine content type based on filename
         content_type = 'application/octet-stream'  # Default
@@ -497,13 +523,14 @@ def serve_model(model_id, filename):
         response = make_response(decoded_content)
         response.headers.set('Content-Type', content_type)
         response.headers.set('Access-Control-Allow-Origin', '*')
+        print(f"Returning model content of type {content_type}, size {len(decoded_content)} bytes")
         return response
         
     except Exception as e:
         print(f"Error serving model {model_id}/{filename}: {e}")
         import traceback
         print(traceback.format_exc())
-        return jsonify({"error": "Server error"}), 500
+        return jsonify({"error": "Server error", "details": str(e)}), 500
 
 @app.route('/miniapp')
 @app.route('/miniapp/')
@@ -529,11 +556,24 @@ def miniapp():
             continue
     
     # If no file is found, return a simple HTML with error message and model viewer
-    model_url = request.args.get('model', '')
+    model_param = request.args.get('model', '')
     
-    # Ensure the model_url has a proper host if it's just a path
-    if model_url and model_url.startswith('/'):
-        model_url = f"{BASE_URL}{model_url}"
+    # Clean up the model_url to ensure it has the correct format
+    if model_param:
+        # If it's just a model ID, format it properly
+        if model_param.startswith('/models/'):
+            model_url = f"{BASE_URL}{model_param}"
+        elif not model_param.startswith('http'):
+            model_url = f"{BASE_URL}/models/{model_param}"
+        else:
+            model_url = model_param
+    else:
+        model_url = ""
+        
+    print(f"Rendering miniapp with model URL: {model_url}")
+    
+    # Prepare a JavaScript-friendly version of the model URL
+    js_model_url = model_url.replace("'", "\\'")
         
     return f"""
     <!DOCTYPE html>
@@ -542,7 +582,7 @@ def miniapp():
         <title>Axiscore 3D Viewer</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body, html {{ height: 100%; margin: 0; padding: 0; }}
+            body, html {{ height: 100%; margin: 0; padding: 0; font-family: Arial, sans-serif; }}
             #viewer {{ width: 100%; height: 100%; }}
             .error {{ 
                 color: red; 
@@ -554,16 +594,51 @@ def miniapp():
                 border-radius: 5px; 
                 display: none; 
             }}
+            .debug-info {{
+                position: absolute;
+                bottom: 10px;
+                left: 10px;
+                background: rgba(255,255,255,0.8);
+                padding: 10px;
+                border-radius: 5px;
+                font-size: 12px;
+                max-width: 80%;
+                display: none;
+            }}
         </style>
     </head>
     <body>
         <div id="viewer"></div>
         <div id="error" class="error"></div>
+        <div id="debug-info" class="debug-info"></div>
         <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
         <script>
-            const modelUrl = '{model_url}';
+            const modelUrl = '{js_model_url}';
+            const debugInfo = document.getElementById('debug-info');
+            
+            // Show debugging info
+            function showDebug(text) {{
+                debugInfo.textContent = text;
+                debugInfo.style.display = 'block';
+            }}
+            
+            // Show debug with model ID
+            if (modelUrl) {{
+                const modelId = modelUrl.split('/').filter(part => part.length > 10).pop();
+                showDebug('Model URL: ' + modelUrl + '\\nModel ID: ' + (modelId || 'unknown'));
+                
+                // Add link to model info
+                if (modelId) {{
+                    const infoLink = document.createElement('a');
+                    infoLink.href = '/model-info/' + modelId;
+                    infoLink.textContent = '\\nView Model Info';
+                    infoLink.target = '_blank';
+                    debugInfo.appendChild(infoLink);
+                }}
+            }}
+            
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0xf0f0f0);
             
@@ -587,26 +662,47 @@ def miniapp():
             if (modelUrl) {{
                 console.log('Loading model from URL:', modelUrl);
                 const loader = new THREE.GLTFLoader();
-                loader.load(modelUrl, (gltf) => {{
-                    scene.add(gltf.scene);
-                    
-                    // Center and scale model
-                    const box = new THREE.Box3().setFromObject(gltf.scene);
-                    const center = box.getCenter(new THREE.Vector3());
-                    const size = box.getSize(new THREE.Vector3());
-                    
-                    gltf.scene.position.x = -center.x;
-                    gltf.scene.position.y = -center.y;
-                    gltf.scene.position.z = -center.z;
-                    
-                    const maxDim = Math.max(size.x, size.y, size.z);
-                    camera.position.z = maxDim * 2;
-                }}, undefined, (error) => {{
-                    console.error('Error loading model:', error);
-                    const errorDiv = document.getElementById('error');
-                    errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                    errorDiv.style.display = 'block';
-                }});
+                
+                // Add error handling to HTTP request
+                const loadModel = () => {{
+                    loader.load(modelUrl, 
+                        // Success callback
+                        (gltf) => {{
+                            scene.add(gltf.scene);
+                            
+                            // Center and scale model
+                            const box = new THREE.Box3().setFromObject(gltf.scene);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            gltf.scene.position.x = -center.x;
+                            gltf.scene.position.y = -center.y;
+                            gltf.scene.position.z = -center.z;
+                            
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            camera.position.z = maxDim * 2;
+                        }}, 
+                        // Progress callback
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        // Error callback
+                        (error) => {{
+                            console.error('Error loading model:', error);
+                            const errorDiv = document.getElementById('error');
+                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                            errorDiv.style.display = 'block';
+                            
+                            const modelIdFromUrl = modelUrl.split('/').filter(p => p).pop() || 'unknown';
+                            showDebug('Error loading model: ' + error.message + '\\nURL: ' + modelUrl + '\\nTry accessing /model-info/' + modelIdFromUrl);
+                        }}
+                    );
+                }};
+                
+                loadModel();
             }} else {{
                 const errorDiv = document.getElementById('error');
                 errorDiv.textContent = 'No model URL provided';
@@ -939,6 +1035,51 @@ def model_webhook():
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
+@app.route('/model-info/<model_id>')
+def model_info(model_id):
+    """Get information about a model for debugging purposes."""
+    try:
+        if not conn or not cursor:
+            return jsonify({"error": "No database connection"}), 500
+            
+        # Check for model in models table
+        cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
+        models = cursor.fetchall()
+        
+        models_info = []
+        for model in models:
+            models_info.append({
+                "id": model[0],
+                "telegram_id": model[1],
+                "model_name": model[2],
+                "model_url": model[3]
+            })
+            
+        # Check in large_model_content table
+        cursor.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
+        large_model = cursor.fetchone()
+        
+        large_model_info = None
+        if large_model:
+            large_model_info = {
+                "model_id": large_model[0],
+                "has_content": True
+            }
+            
+        return jsonify({
+            "model_id": model_id,
+            "models_found": len(models_info),
+            "models": models_info,
+            "large_model": large_model_info
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 @app.errorhandler(500)
 def handle_500(e):
