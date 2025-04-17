@@ -507,8 +507,93 @@ def miniapp():
     if model_param:
         print(f"MiniApp requested with model: {model_param}")
     
-    # Redirect to the frontend for handling
-    return send_file('../frontend/build/index.html')
+    # Try different possible paths for the frontend file
+    possible_paths = [
+        '../frontend/build/index.html',  # Original relative path
+        'frontend/build/index.html',     # Without leading ../
+        '/app/frontend/build/index.html' # Absolute path in container
+    ]
+    
+    for path in possible_paths:
+        try:
+            if os.path.exists(path):
+                return send_file(path)
+        except:
+            continue
+    
+    # If no file is found, return a simple HTML with error message and model viewer
+    model_url = request.args.get('model', '')
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Axiscore 3D Viewer</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body, html {{ height: 100%; margin: 0; padding: 0; }}
+            #viewer {{ width: 100%; height: 100%; }}
+        </style>
+    </head>
+    <body>
+        <div id="viewer"></div>
+        <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script>
+            const modelUrl = '{model_url}';
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            
+            const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('viewer').appendChild(renderer.domElement);
+            
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            
+            if (modelUrl) {{
+                const loader = new THREE.GLTFLoader();
+                loader.load(modelUrl, (gltf) => {{
+                    scene.add(gltf.scene);
+                    
+                    // Center and scale model
+                    const box = new THREE.Box3().setFromObject(gltf.scene);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    
+                    gltf.scene.position.x = -center.x;
+                    gltf.scene.position.y = -center.y;
+                    gltf.scene.position.z = -center.z;
+                    
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    camera.position.z = maxDim * 2;
+                }}, undefined, (error) => {{
+                    console.error('Error loading model:', error);
+                    alert('Failed to load 3D model: ' + error.message);
+                }});
+            }}
+            
+            function animate() {{
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }}
+            
+            animate();
+        </script>
+    </body>
+    </html>
+    """
 
 @app.route('/')
 def index():
@@ -626,15 +711,23 @@ def save_model_to_storage(file_data):
             print("Adding content_size column to models table")
             cursor.execute("ALTER TABLE models ADD COLUMN content_size BIGINT")
             
+        # Extract proper telegram_id with fallback to avoid 'unknown'
+        telegram_id = file_data.get('telegram_id')
+        if not telegram_id or telegram_id == 'unknown':
+            telegram_id = '591646476'  # Use a default ID if unknown
+            
+        # Generate consistent URL for the model that will be accessible
+        model_path = f"/models/{model_id}/{filename}"
+        model_url = f"{BASE_URL}{model_path}"
+        
         # Store the model information in the database with different strategies based on size
         if content_size > 1024 * 1024:  # If larger than 1MB
             print(f"Large content detected ({content_size} bytes), storing reference only")
-            # For large models, store the model ID but not the content
+            # For large models, store the model reference
             try:
-                telegram_id = file_data.get('telegram_id', 'unknown')
                 cursor.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
-                    (telegram_id, filename, f"base64://{model_id}", content_size, datetime.now())
+                    (telegram_id, filename, model_url, content_size, datetime.now())
                 )
                 
                 # Store content in a separate table for large content
@@ -649,7 +742,7 @@ def save_model_to_storage(file_data):
                     # Try with just the essential columns
                     cursor.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
-                        (telegram_id, filename, f"base64://{model_id}")
+                        (telegram_id, filename, model_url)
                     )
                     cursor.execute(
                         "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
@@ -661,10 +754,9 @@ def save_model_to_storage(file_data):
             # For smaller models, store the content directly
             print(f"Standard content size ({content_size} bytes), storing directly")
             try:
-                telegram_id = file_data.get('telegram_id', 'unknown')
                 cursor.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content, content_size, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (telegram_id, filename, f"base64://{model_id}", file_data['content'], content_size, datetime.now())
+                    (telegram_id, filename, model_url, file_data['content'], content_size, datetime.now())
                 )
             except psycopg2.Error as e:
                 # Check if error is due to missing column
@@ -673,7 +765,7 @@ def save_model_to_storage(file_data):
                     # Try with just the essential columns
                     cursor.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s)",
-                        (telegram_id, filename, f"base64://{model_id}", file_data['content'])
+                        (telegram_id, filename, model_url, file_data['content'])
                     )
                 else:
                     raise
@@ -682,9 +774,8 @@ def save_model_to_storage(file_data):
         conn.commit()
         print(f"Successfully saved model {model_id} to database")
         
-        # Generate a public URL for the model
-        model_url = f"/models/{model_id}/{filename}"
-        return model_url
+        # Return the path portion for the model
+        return model_path
         
     except Exception as e:
         # Rollback in case of error
