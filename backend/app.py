@@ -459,12 +459,22 @@ def serve_model(model_id, filename):
         
         # Check if we have content stored
         if not content:
-            print(f"Model found but no content stored: {model_id}")
-            return jsonify({"error": "Model content not available"}), 404
+            # Try to get it from large_model_content table
+            print(f"Model found but no content stored in models table. Checking large_model_content for: {model_id}")
+            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (model_id,))
+            large_result = cursor.fetchone()
+            
+            if large_result and large_result[0]:
+                content = large_result[0]
+                print(f"Content found in large_model_content table")
+            else:
+                print(f"No content found in either table for model: {model_id}")
+                return jsonify({"error": "Model content not available"}), 404
         
         # Convert base64 back to binary
         try:
             decoded_content = base64.b64decode(content)
+            print(f"Successfully decoded content, size: {len(decoded_content)} bytes")
         except Exception as e:
             print(f"Failed to decode base64 content: {e}")
             return jsonify({"error": "Failed to process model data"}), 500
@@ -484,12 +494,19 @@ def serve_model(model_id, filename):
         
     except Exception as e:
         print(f"Error serving model {model_id}/{filename}: {e}")
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": "Server error"}), 500
 
 @app.route('/miniapp')
 @app.route('/miniapp/')
 def miniapp():
     """Serve the MiniApp React frontend."""
+    # Log the request for debugging
+    model_param = request.args.get('model')
+    if model_param:
+        print(f"MiniApp requested with model: {model_param}")
+    
     # Redirect to the frontend for handling
     return send_file('../frontend/build/index.html')
 
@@ -801,6 +818,20 @@ def model_webhook():
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
+@app.errorhandler(500)
+def handle_500(e):
+    """Handle internal server errors and log details."""
+    import traceback
+    error_traceback = traceback.format_exc()
+    print(f"Internal Server Error: {str(e)}")
+    print(error_traceback)
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": str(e),
+        "path": request.path,
+        "method": request.method
+    }), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
