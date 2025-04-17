@@ -121,60 +121,9 @@ def webhook():
     if not chat_id:
         return jsonify({"status": "error", "msg": "No chat_id found"}), 400
     
-    # Handle commands
-    if text.startswith('/start'):
-        response_text = "Welcome to 3D Model Viewer Bot! Send me a 3D model URL to view it."
-        send_message(chat_id, response_text)
-    elif text.startswith('/help'):
-        response_text = "This bot allows you to view 3D models. Send a GLTF/GLB model URL to view it."
-        send_message(chat_id, response_text)
-    elif text.startswith('/mymodels'):
-        # Get user's models
-        models = []
-        if conn and cursor:
-            try:
-                cursor.execute("SELECT model_name, model_url FROM models WHERE telegram_id = %s", (chat_id,))
-                models = cursor.fetchall()
-            except Exception as e:
-                print(f"Database error in webhook /mymodels: {e}")
-                models = []
-        
-        if models:
-            model_list = "\n".join([f"{idx+1}. {model[0]}: {model[1]}" for idx, model in enumerate(models)])
-            response_text = f"Your models:\n{model_list}"
-        else:
-            response_text = "You haven't uploaded any models yet."
-        
-        send_message(chat_id, response_text)
-    elif text.startswith('http') and ('.glb' in text.lower() or '.gltf' in text.lower()):
-        # Process model URL
-        model_url = text.strip()
-        model_name = os.path.basename(urllib.parse.urlparse(model_url).path)
-        
-        # Save model URL to database if available
-        if conn and cursor:
-            try:
-                cursor.execute(
-                    "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
-                    (chat_id, model_name, model_url)
-                )
-                conn.commit()
-            except Exception as e:
-                print(f"Database error in webhook model save: {e}")
-        
-        # Generate viewer URL
-        viewer_url = f"{request.url_root}view?model={urllib.parse.quote(model_url)}"
-        
-        # Send inline keyboard with button to view the model
-        send_inline_button(
-            chat_id, 
-            f"Model '{model_name}' added. Click the button below to view it:", 
-            "View 3D Model", 
-            viewer_url
-        )
-    else:
-        response_text = "Please send a valid 3D model URL (ending with .glb or .gltf)"
-        send_message(chat_id, response_text)
+    # Simple echo response to check if bot is alive
+    response_text = f"Bot is alive! You said: {text}"
+    send_message(chat_id, response_text)
     
     return jsonify({"status": "ok"}), 200
 
