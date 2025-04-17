@@ -1,7 +1,10 @@
 import React from 'react';
 import { BrowserRouter as Router, Switch, Route, useLocation } from 'react-router-dom';
 import ModelViewerScreen from './components/ModelViewerScreen';
+import MiniApp from './components/MiniApp';
+import { TelegramProvider } from './context/TelegramContext';
 import './styles/main.css';
+import './styles/theme.css';
 
 // Helper function to get URL parameters
 const useQuery = () => {
@@ -29,6 +32,15 @@ const HomePage = () => {
   );
 };
 
+// MiniApp route - the main Telegram Mini App entry point
+const MiniAppPage = () => {
+  return (
+    <TelegramProvider>
+      <MiniApp />
+    </TelegramProvider>
+  );
+};
+
 // Determine the basename based on environment
 const getBasename = () => {
   // In development, don't use a basename
@@ -45,6 +57,7 @@ const App = () => {
       <div className="App">
         <Switch>
           <Route path="/view" exact component={ViewerPage} />
+          <Route path="/miniapp" exact component={MiniAppPage} />
           <Route path="/" component={HomePage} />
         </Switch>
       </div>

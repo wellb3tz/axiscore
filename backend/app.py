@@ -109,8 +109,16 @@ def telegram_auth():
     access_token = create_access_token(identity=telegram_id)
     return jsonify(access_token=access_token), 200
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
+    # If it's a GET request, just return a simple status
+    if request.method == 'GET':
+        return jsonify({
+            "status": "online",
+            "message": "Telegram webhook is active. Please use POST requests for webhook communication."
+        })
+    
+    # Handle POST request (actual webhook)
     data = request.json
     
     # Extract message data
@@ -306,6 +314,11 @@ def add_model():
     except Exception as e:
         print(f"Database error in add_model: {e}")
         return jsonify({"error": "Database error occurred"}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    # Return a 204 No Content response
+    return '', 204
 
 @app.route('/')
 def index():
