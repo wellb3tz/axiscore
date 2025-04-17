@@ -16,10 +16,15 @@ import shutil
 # Load environment variables from .env file
 load_dotenv()
 
+# Create uploads directory if it doesn't exist
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # Initialize Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend/build')
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 jwt = JWTManager(app)
 
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -146,13 +151,25 @@ def webhook():
                     # Save to storage and get URL
                     model_url = save_model_to_storage(file_path, file_name, chat_id)
                     
-                    # Generate Mini App URL for viewing the model
-                    miniapp_url = f"{request.url_root}miniapp?model={urllib.parse.quote(model_url)}"
+                    # Get the bot username for creating the Mini App URL
+                    bot_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+                    bot_info = requests.get(bot_info_url).json()
+                    bot_username = bot_info.get('result', {}).get('username', '')
+                    
+                    # Generate Mini App URL using Telegram's t.me format
+                    # This ensures it opens in Telegram, not the browser
+                    miniapp_url = f"https://t.me/{bot_username}/miniapp?startapp=model__{urllib.parse.quote(model_url)}"
+                    
+                    # Also create a direct web URL as fallback
+                    direct_url = f"{request.url_root}miniapp?model={urllib.parse.quote(model_url)}"
+                    
+                    # Send message with both options
+                    response_text = f"3D model received: {file_name}\n\nUse the button below to view it in Telegram:"
                     
                     # Send inline button to open in Axiscore
                     send_inline_button(
                         chat_id, 
-                        f"3D model received: {file_name}", 
+                        response_text, 
                         "Open in Axiscore", 
                         miniapp_url
                     )
@@ -374,7 +391,14 @@ def favicon():
 @app.route('/models/<filename>', methods=['GET'])
 def serve_model(filename):
     """Serve uploaded 3D model files."""
-    return send_from_directory('uploads', filename)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/miniapp')
+@app.route('/miniapp/')
+def miniapp():
+    """Serve the MiniApp React frontend."""
+    # Redirect to the frontend for handling
+    return send_file('../frontend/build/index.html')
 
 @app.route('/')
 def index():
@@ -398,15 +422,14 @@ def download_telegram_file(file_id):
         
         # Create local path - store in uploads folder with unique filename
         local_filename = f"{file_id}_{os.path.basename(telegram_file_path)}"
-        local_path = os.path.join("uploads", local_filename)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        local_path = os.path.join(app.config['UPLOAD_FOLDER'], local_filename)
         
         # Save file locally
         with open(local_path, 'wb') as f:
             f.write(response.content)
         
         print(f"File downloaded and saved to {local_path}")
-        return local_path
+        return local_filename  # Return just the filename, not the full path
     else:
         print(f"Error getting file info: {file_info}")
         return None
@@ -419,7 +442,7 @@ def save_model_to_storage(file_path, file_name, user_id):
     if conn and cursor:
         try:
             # Get public URL for the file
-            model_url = f"{request.url_root}models/{os.path.basename(file_path)}"
+            model_url = f"{request.url_root}models/{file_path}"
             
             cursor.execute(
                 "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
@@ -434,7 +457,19 @@ def save_model_to_storage(file_path, file_name, user_id):
             print(f"Database error in save_model_to_storage: {e}")
     
     # Fallback: direct file path if database saving fails
-    return f"{request.url_root}models/{os.path.basename(file_path)}"
+    return f"{request.url_root}models/{file_path}"
+
+# Serve React static files
+@app.route('/static/<path:path>')
+def serve_static(path):
+    return send_from_directory('../frontend/build/static', path)
+
+@app.route('/<path:path>')
+def catch_all(path):
+    """Catch-all route to support React Router."""
+    if path.startswith('api/') or path.startswith('models/'):
+        return jsonify({"error": "Route not found"}), 404
+    return send_file('../frontend/build/index.html')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

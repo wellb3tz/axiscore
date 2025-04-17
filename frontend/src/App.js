@@ -57,8 +57,9 @@ const App = () => {
       <div className="App">
         <Switch>
           <Route path="/view" exact component={ViewerPage} />
-          <Route path="/miniapp" exact component={MiniAppPage} />
-          <Route path="/" component={HomePage} />
+          <Route path="/miniapp" component={MiniAppPage} />
+          <Route path="/home" exact component={HomePage} />
+          <Route path="/" component={MiniAppPage} />
         </Switch>
       </div>
     </Router>

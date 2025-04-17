@@ -11,12 +11,23 @@ const MiniApp = () => {
   // Get model URL from query parameters if available
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const urlParam = params.get('model');
+    
+    // Check for regular query parameter
+    let urlParam = params.get('model');
+    
+    // If no regular param, check for Telegram Mini App startapp parameter
+    if (!urlParam && telegramApp) {
+      const startParam = telegramApp.initDataUnsafe.start_param;
+      if (startParam && startParam.startsWith('model__')) {
+        // Extract the model URL from the start parameter
+        urlParam = decodeURIComponent(startParam.substring(7));
+      }
+    }
     
     if (urlParam) {
       setModelUrl(urlParam);
     }
-  }, []);
+  }, [telegramApp]);
   
   useEffect(() => {
     // If Telegram is available, adjust the UI
