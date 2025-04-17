@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/axiscore/static/css/main.4c433edf.css",
-    "main.js": "/axiscore/static/js/main.ed713190.js",
+    "main.js": "/axiscore/static/js/main.2673bf26.js",
     "index.html": "/axiscore/index.html",
     "main.4c433edf.css.map": "/axiscore/static/css/main.4c433edf.css.map",
-    "main.ed713190.js.map": "/axiscore/static/js/main.ed713190.js.map"
+    "main.2673bf26.js.map": "/axiscore/static/js/main.2673bf26.js.map"
   },
   "entrypoints": [
     "static/css/main.4c433edf.css",
-    "static/js/main.ed713190.js"
+    "static/js/main.2673bf26.js"
   ]
 }
