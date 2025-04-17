@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.css": "/telegram-3d-viewer/static/css/main.67c2a968.css",
-    "main.js": "/telegram-3d-viewer/static/js/main.42127e15.js",
-    "index.html": "/telegram-3d-viewer/index.html",
-    "main.67c2a968.css.map": "/telegram-3d-viewer/static/css/main.67c2a968.css.map",
-    "main.42127e15.js.map": "/telegram-3d-viewer/static/js/main.42127e15.js.map"
+    "main.css": "/axiscore/static/css/main.67c2a968.css",
+    "main.js": "/axiscore/static/js/main.42127e15.js",
+    "index.html": "/axiscore/index.html",
+    "main.67c2a968.css.map": "/axiscore/static/css/main.67c2a968.css.map",
+    "main.42127e15.js.map": "/axiscore/static/js/main.42127e15.js.map"
   },
   "entrypoints": [
     "static/css/main.67c2a968.css",
