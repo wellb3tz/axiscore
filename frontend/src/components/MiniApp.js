@@ -25,6 +25,7 @@ const MiniApp = () => {
     }
     
     if (urlParam) {
+      console.log("Loading model from URL:", urlParam);
       setModelUrl(urlParam);
     }
   }, [telegramApp]);
@@ -105,6 +106,32 @@ const MiniApp = () => {
               >
                 Download Original
               </a>
+            </div>
+          )}
+          
+          {/* Model error message - show when model fails to load */}
+          {modelUrl && (
+            <div 
+              className="error-button" 
+              style={{
+                position: 'absolute',
+                bottom: '20px',
+                left: '20px',
+                zIndex: 100
+              }}
+            >
+              <button 
+                className="tg-secondary-button"
+                onClick={() => {
+                  // Copy error message
+                  navigator.clipboard.writeText(
+                    `Model URL: ${modelUrl}\nPlease report this issue to the bot developer.`
+                  );
+                  alert("Error details copied to clipboard");
+                }}
+              >
+                Report Issue
+              </button>
             </div>
           )}
           

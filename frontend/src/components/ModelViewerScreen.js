@@ -98,7 +98,19 @@ const ModelViewerScreen = ({ modelUrl }) => {
         },
         (error) => {
           console.error('Error loading model:', error);
-          setError(error.message || 'Failed to load model');
+          
+          // Try to provide more helpful error messages
+          let errorMessage = error.message || 'Failed to load model';
+          
+          if (errorMessage.includes('NetworkError') || errorMessage.includes('CORS')) {
+            errorMessage = 'Network error: The model could not be loaded due to CORS or server issues. Please try again later.';
+          } else if (errorMessage.includes('404')) {
+            errorMessage = 'Model not found: The 3D model file could not be found on the server.';
+          } else if (errorMessage.includes('500')) {
+            errorMessage = 'Server error: There was a problem processing the 3D model on our servers.';
+          }
+          
+          setError(errorMessage);
           setLoading(false);
         }
       );

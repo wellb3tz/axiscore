@@ -12,6 +12,8 @@ import urllib.parse
 import socket
 import re
 import shutil
+import base64
+import io
 
 # Load environment variables from .env file
 load_dotenv()
@@ -146,10 +148,10 @@ def webhook():
         if file_name.lower().endswith(('.glb', '.gltf')) or 'model' in mime_type.lower():
             # Download file from Telegram
             try:
-                file_path = download_telegram_file(file_id)
-                if file_path:
+                file_data = download_telegram_file(file_id)
+                if file_data:
                     # Save to storage and get URL
-                    model_url = save_model_to_storage(file_path, file_name, chat_id)
+                    model_url = save_model_to_storage(file_data, file_name, chat_id)
                     
                     # Get the bot username for creating the Mini App URL
                     bot_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
@@ -415,10 +417,44 @@ def favicon():
     # Return a 204 No Content response
     return '', 204
 
-@app.route('/models/<filename>', methods=['GET'])
-def serve_model(filename):
-    """Serve uploaded 3D model files."""
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+@app.route('/models/<model_id>/<filename>', methods=['GET'])
+def serve_model_from_db(model_id, filename):
+    """Serve a 3D model file from the database."""
+    try:
+        # Get the model from the database
+        if conn and cursor:
+            cursor.execute("SELECT content FROM models WHERE model_url = %s", (f"base64://{model_id}",))
+            result = cursor.fetchone()
+            
+            if result and result[0]:
+                # Decode the base64 content
+                file_content = base64.b64decode(result[0])
+                
+                # Create a BytesIO object
+                file_io = io.BytesIO(file_content)
+                
+                # Determine content type based on extension
+                content_type = 'application/octet-stream'
+                if filename.lower().endswith('.glb'):
+                    content_type = 'model/gltf-binary'
+                elif filename.lower().endswith('.gltf'):
+                    content_type = 'model/gltf+json'
+                
+                # Send the file
+                return send_file(
+                    file_io,
+                    mimetype=content_type, 
+                    as_attachment=False,
+                    download_name=filename
+                )
+            else:
+                print(f"Model not found in database: {model_id}")
+                return jsonify({"error": "Model not found"}), 404
+        else:
+            return jsonify({"error": "Database connection not available"}), 503
+    except Exception as e:
+        print(f"Error serving model {model_id}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/miniapp')
 @app.route('/miniapp/')
@@ -435,7 +471,7 @@ def index():
     })
 
 def download_telegram_file(file_id):
-    """Download a file from Telegram servers using its file_id."""
+    """Download a file from Telegram servers using its file_id and return content."""
     # Get file path from Telegram
     file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
     file_info_response = requests.get(file_info_url)
@@ -447,44 +483,78 @@ def download_telegram_file(file_id):
         download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{telegram_file_path}"
         response = requests.get(download_url)
         
-        # Create local path - store in uploads folder with unique filename
-        local_filename = f"{file_id}_{os.path.basename(telegram_file_path)}"
-        local_path = os.path.join(app.config['UPLOAD_FOLDER'], local_filename)
-        
-        # Save file locally
-        with open(local_path, 'wb') as f:
-            f.write(response.content)
-        
-        print(f"File downloaded and saved to {local_path}")
-        return local_filename  # Return just the filename, not the full path
+        if response.status_code == 200:
+            # Get the file content as bytes
+            file_content = response.content
+            
+            # Create local path for debug purposes
+            local_filename = f"{file_id}_{os.path.basename(telegram_file_path)}"
+            local_path = os.path.join(app.config['UPLOAD_FOLDER'], local_filename)
+            
+            # Save file locally as a backup (this will be ephemeral on Render)
+            try:
+                with open(local_path, 'wb') as f:
+                    f.write(file_content)
+                print(f"File saved as backup to {local_path}")
+            except Exception as e:
+                print(f"Warning: Could not save backup file: {e}")
+            
+            # Encode file content as base64 for storage in DB
+            base64_content = base64.b64encode(file_content).decode('utf-8')
+            
+            print(f"File downloaded and encoded successfully")
+            return {
+                'filename': local_filename,
+                'content': base64_content,
+                'size': len(file_content)
+            }
+        else:
+            print(f"Error downloading file: {response.status_code}")
+            return None
     else:
         print(f"Error getting file info: {file_info}")
         return None
 
-def save_model_to_storage(file_path, file_name, user_id):
+def save_model_to_storage(file_data, file_name, user_id):
     """Save model information to database and return public URL."""
-    # For this example, we'll serve files directly from our uploads folder
+    if not file_data:
+        return None
+        
+    # Create a unique ID for this model to use in URLs
+    model_id = hashlib.md5(f"{user_id}_{file_name}_{file_data['size']}".encode()).hexdigest()
     
     # Save reference in the database
     if conn and cursor:
         try:
-            # Get public URL for the file
-            model_url = f"{request.url_root}models/{file_path}"
+            # Store the file info in the models table with content
+            # First, check if we need to add the content column
+            try:
+                cursor.execute("SELECT content FROM models LIMIT 1")
+            except psycopg2.errors.UndefinedColumn:
+                print("Adding 'content' column to models table")
+                cursor.execute("ALTER TABLE models ADD COLUMN content TEXT")
+                conn.commit()
             
+            # Store the model with its content
             cursor.execute(
-                "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
-                (user_id, file_name, model_url)
+                "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s) RETURNING id",
+                (user_id, file_name, f"base64://{model_id}", file_data['content'])
             )
-            model_id = cursor.fetchone()[0]
+            db_id = cursor.fetchone()[0]
             conn.commit()
             
-            print(f"Model saved to database with ID {model_id}")
+            # Generate a URL that will serve the model from our API
+            model_url = f"{request.url_root}models/{model_id}/{file_name}"
+            
+            print(f"Model saved to database with ID {db_id}")
             return model_url
         except Exception as e:
             print(f"Database error in save_model_to_storage: {e}")
+            return None
     
     # Fallback: direct file path if database saving fails
-    return f"{request.url_root}models/{file_path}"
+    print("Database not available, cannot save model")
+    return None
 
 # Serve React static files
 @app.route('/static/<path:path>')
