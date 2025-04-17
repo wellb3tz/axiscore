@@ -3,16 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Game</title>
+    <title>axiscore</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <meta http-equiv="Content-Security-Policy" content="
       default-src 'self';
-      connect-src 'self' https://thequickandthedead.onrender.com wss://thequickandthedead.onrender.com https://telegram.org https://raw.githubusercontent.com blob:;
+      connect-src 'self' https://axiscore.onrender.com wss://axiscore.onrender.com https://telegram.org https://raw.githubusercontent.com blob:;
       font-src 'self' https://fonts.gstatic.com;
       style-src 'self' https://fonts.googleapis.com 'unsafe-inline';
       img-src 'self' https://i.imgur.com https://raw.githubusercontent.com blob:;
       script-src 'self' https://telegram.org 'unsafe-inline' 'nonce-2726c7f26c'">
     <link href="https://fonts.googleapis.com/css2?family=Almendra:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Start Single Page Apps for GitHub Pages -->
+    <script type="text/javascript" nonce="2726c7f26c">
+      // Single Page Apps for GitHub Pages
+      // MIT License
+      // https://github.com/rafgraph/spa-github-pages
+      (function(l) {
+        if (l.search[1] === '/' ) {
+          var decoded = l.search.slice(1).split('&').map(function(s) { 
+            return s.replace(/~and~/g, '&')
+          }).join('?');
+          window.history.replaceState(null, null,
+              l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      }(window.location))
+    </script>
+    <!-- End Single Page Apps for GitHub Pages -->
+    
     <script nonce="2726c7f26c">
       if (window.Telegram && window.Telegram.WebApp) {
         window.Telegram.WebApp.ready();
