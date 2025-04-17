@@ -156,23 +156,50 @@ def webhook():
                     bot_info = requests.get(bot_info_url).json()
                     bot_username = bot_info.get('result', {}).get('username', '')
                     
-                    # Generate Mini App URL using Telegram's t.me format
-                    # This ensures it opens in Telegram, not the browser
-                    miniapp_url = f"https://t.me/{bot_username}/miniapp?startapp=model__{urllib.parse.quote(model_url)}"
+                    # Create a web app URL that works in both Telegram and browser
+                    model_param = urllib.parse.quote(model_url)
                     
-                    # Also create a direct web URL as fallback
-                    direct_url = f"{request.url_root}miniapp?model={urllib.parse.quote(model_url)}"
+                    # Direct web URL for browser access
+                    direct_url = f"{request.url_root}miniapp?model={model_param}"
+                    
+                    # Use Telegram's t.me format with web app
+                    # The format should be: https://t.me/BOT_USERNAME/app
+                    # Where "app" should match your Mini App short_name in BotFather
+                    miniapp_url = f"https://t.me/{bot_username}/app?startapp=model__{model_param}"
+                    
+                    # For debugging, log the URL
+                    print(f"Generated Mini App URL: {miniapp_url}")
                     
                     # Send message with both options
                     response_text = f"3D model received: {file_name}\n\nUse the button below to view it in Telegram:"
                     
                     # Send inline button to open in Axiscore
-                    send_inline_button(
-                        chat_id, 
-                        response_text, 
-                        "Open in Axiscore", 
-                        miniapp_url
-                    )
+                    keyboard = {
+                        'inline_keyboard': [
+                            [
+                                {
+                                    'text': 'Open in Axiscore',
+                                    'url': miniapp_url
+                                }
+                            ],
+                            [
+                                {
+                                    'text': 'Open in Browser',
+                                    'url': direct_url
+                                }
+                            ]
+                        ]
+                    }
+                    
+                    # Send the message with keyboard
+                    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                    payload = {
+                        'chat_id': chat_id,
+                        'text': response_text,
+                        'reply_markup': keyboard
+                    }
+                    requests.post(url, json=payload)
+                    
                     return jsonify({"status": "ok"}), 200
                 else:
                     send_message(chat_id, "Failed to download your file. Please try again.")
