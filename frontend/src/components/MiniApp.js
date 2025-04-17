@@ -7,11 +7,26 @@ const MiniApp = () => {
   const [modelUrl, setModelUrl] = useState('');
   const [loading, setLoading] = useState(false);
   
+  // Get model URL from query parameters if available
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlParam = params.get('model');
+    
+    if (urlParam) {
+      setModelUrl(urlParam);
+    }
+  }, []);
+  
   useEffect(() => {
     // If Telegram is available, adjust the UI
     if (telegramApp) {
       // Enable back button if needed
-      telegramApp.BackButton.show();
+      if (modelUrl) {
+        telegramApp.BackButton.show();
+      } else {
+        telegramApp.BackButton.hide();
+      }
+      
       telegramApp.BackButton.onClick(() => {
         // Clear model or go back to model list
         setModelUrl('');
@@ -20,21 +35,25 @@ const MiniApp = () => {
       // Expand the app to full height
       telegramApp.expand();
       
-      // Set the main button if needed
-      telegramApp.MainButton.setText('Choose 3D Model');
-      telegramApp.MainButton.show();
-      telegramApp.MainButton.onClick(() => {
-        // Here you would implement model selection
-        // For demo purposes, let's use a sample model
-        setLoading(true);
-        
-        // Simulate loading a model
-        setTimeout(() => {
-          setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
-          setLoading(false);
-          telegramApp.MainButton.hide();
-        }, 1000);
-      });
+      // Set the main button for model selection (only if no model is currently displayed)
+      if (!modelUrl) {
+        telegramApp.MainButton.setText('Choose 3D Model');
+        telegramApp.MainButton.show();
+        telegramApp.MainButton.onClick(() => {
+          // Here you would implement model selection
+          // For demo purposes, let's use a sample model
+          setLoading(true);
+          
+          // Simulate loading a model
+          setTimeout(() => {
+            setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
+            setLoading(false);
+            telegramApp.MainButton.hide();
+          }, 1000);
+        });
+      } else {
+        telegramApp.MainButton.hide();
+      }
     }
     
     return () => {
@@ -44,20 +63,7 @@ const MiniApp = () => {
         telegramApp.MainButton.hide();
       }
     };
-  }, [telegramApp]);
-  
-  // When a model is loaded, hide the main button and show back button
-  useEffect(() => {
-    if (!telegramApp) return;
-    
-    if (modelUrl) {
-      telegramApp.MainButton.hide();
-      telegramApp.BackButton.show();
-    } else {
-      telegramApp.MainButton.show();
-      telegramApp.BackButton.hide();
-    }
-  }, [modelUrl, telegramApp]);
+  }, [telegramApp, modelUrl]);
   
   if (!isReady) {
     return (
@@ -76,12 +82,33 @@ const MiniApp = () => {
           <span>Loading model...</span>
         </div>
       ) : modelUrl ? (
-        <ModelViewerScreen modelUrl={modelUrl} />
+        <div className="model-viewer-container">
+          <ModelViewerScreen modelUrl={modelUrl} />
+          
+          {/* Download button */}
+          <div className="download-button-container">
+            <a 
+              href={modelUrl} 
+              download 
+              className="tg-button"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                position: 'absolute',
+                bottom: '20px',
+                right: '20px',
+                zIndex: 100
+              }}
+            >
+              Download Original
+            </a>
+          </div>
+        </div>
       ) : (
         <div className="mini-app-welcome">
           <h2>Welcome to 3D Model Viewer</h2>
           {user && <p>Hello, {user.first_name}!</p>}
-          <p className="tg-hint">Use the main button to select a 3D model to view</p>
+          <p className="tg-hint">Upload a 3D model in the chat or use the examples below</p>
           
           <div className="model-examples">
             <h3>Example models:</h3>

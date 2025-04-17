@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import requests
 import hashlib
@@ -11,6 +11,7 @@ from flask_cors import CORS
 import urllib.parse
 import socket
 import re
+import shutil
 
 # Load environment variables from .env file
 load_dotenv()
@@ -129,9 +130,59 @@ def webhook():
     if not chat_id:
         return jsonify({"status": "error", "msg": "No chat_id found"}), 400
     
-    # Simple echo response to check if bot is alive
-    response_text = f"Bot is alive! You said: {text}"
-    send_message(chat_id, response_text)
+    # Check if message contains a document (file)
+    if message.get('document'):
+        document = message.get('document')
+        file_name = document.get('file_name', '')
+        file_id = document.get('file_id')
+        mime_type = document.get('mime_type', '')
+        
+        # Check if it's a 3D model file
+        if file_name.lower().endswith(('.glb', '.gltf')) or 'model' in mime_type.lower():
+            # Download file from Telegram
+            try:
+                file_path = download_telegram_file(file_id)
+                if file_path:
+                    # Save to storage and get URL
+                    model_url = save_model_to_storage(file_path, file_name, chat_id)
+                    
+                    # Generate Mini App URL for viewing the model
+                    miniapp_url = f"{request.url_root}miniapp?model={urllib.parse.quote(model_url)}"
+                    
+                    # Send inline button to open in Axiscore
+                    send_inline_button(
+                        chat_id, 
+                        f"3D model received: {file_name}", 
+                        "Open in Axiscore", 
+                        miniapp_url
+                    )
+                    return jsonify({"status": "ok"}), 200
+                else:
+                    send_message(chat_id, "Failed to download your file. Please try again.")
+            except Exception as e:
+                print(f"Error processing 3D model: {e}")
+                send_message(chat_id, "Failed to process your 3D model. Please try again.")
+        else:
+            send_message(chat_id, "Please send a 3D model file (.glb or .gltf).")
+    # Handle text messages
+    else:
+        # Check for specific commands
+        if text.lower() == '/start':
+            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb or .gltf) and I'll generate an interactive preview for you."
+        elif text.lower() == '/help':
+            response_text = """
+Axiscore 3D Model Viewer Help:
+• Send a 3D model file (.glb or .gltf) directly to this chat
+• I'll create an interactive viewer link
+• Click "Open in Axiscore" to view and interact with your model
+• Use pinch/scroll to zoom, drag to rotate
+• You can download the original model from the viewer
+            """
+        else:
+            # Generic response for other messages
+            response_text = f"Send me a 3D model file (.glb or .gltf) to view it in Axiscore. You said: {text}"
+        
+        send_message(chat_id, response_text)
     
     return jsonify({"status": "ok"}), 200
 
@@ -320,12 +371,70 @@ def favicon():
     # Return a 204 No Content response
     return '', 204
 
+@app.route('/models/<filename>', methods=['GET'])
+def serve_model(filename):
+    """Serve uploaded 3D model files."""
+    return send_from_directory('uploads', filename)
+
 @app.route('/')
 def index():
     return jsonify({
         "status": "online",
         "message": "3D Model Viewer API is running"
     })
+
+def download_telegram_file(file_id):
+    """Download a file from Telegram servers using its file_id."""
+    # Get file path from Telegram
+    file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+    file_info_response = requests.get(file_info_url)
+    file_info = file_info_response.json()
+    
+    if file_info.get('ok'):
+        telegram_file_path = file_info['result']['file_path']
+        # Download file from Telegram
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{telegram_file_path}"
+        response = requests.get(download_url)
+        
+        # Create local path - store in uploads folder with unique filename
+        local_filename = f"{file_id}_{os.path.basename(telegram_file_path)}"
+        local_path = os.path.join("uploads", local_filename)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        
+        # Save file locally
+        with open(local_path, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"File downloaded and saved to {local_path}")
+        return local_path
+    else:
+        print(f"Error getting file info: {file_info}")
+        return None
+
+def save_model_to_storage(file_path, file_name, user_id):
+    """Save model information to database and return public URL."""
+    # For this example, we'll serve files directly from our uploads folder
+    
+    # Save reference in the database
+    if conn and cursor:
+        try:
+            # Get public URL for the file
+            model_url = f"{request.url_root}models/{os.path.basename(file_path)}"
+            
+            cursor.execute(
+                "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
+                (user_id, file_name, model_url)
+            )
+            model_id = cursor.fetchone()[0]
+            conn.commit()
+            
+            print(f"Model saved to database with ID {model_id}")
+            return model_url
+        except Exception as e:
+            print(f"Database error in save_model_to_storage: {e}")
+    
+    # Fallback: direct file path if database saving fails
+    return f"{request.url_root}models/{os.path.basename(file_path)}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
