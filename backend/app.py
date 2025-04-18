@@ -461,11 +461,11 @@ def favicon():
 def serve_model(model_id, filename):
     """Serve model file directly from the database."""
     try:
-        print(f"Attempting to serve model: {model_id}/{filename}")
+        print(f"🔍 Serving model request: {model_id}/{filename}")
         
         # Ensure database connection
         if not ensure_db_connection():
-            print("Database connection unavailable")
+            print("❌ Database connection unavailable")
             return jsonify({"error": "Database connection unavailable"}), 500
         
         # Reset any failed transaction state
@@ -473,76 +473,85 @@ def serve_model(model_id, filename):
             conn.rollback()
         except:
             pass
-            
-        # DEBUG: Print all models in the database to help diagnose
-        try:
-            cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models LIMIT 10")
-            all_models = cursor.fetchall()
-            print("Available models in database:")
-            for model in all_models:
-                print(f"  ID: {model[0]}, TG: {model[1]}, Name: {model[2]}, URL: {model[3]}")
-        except Exception as e:
-            print(f"Error listing models: {e}")
-            # Try to recover from listing error
-            try:
-                conn.rollback()
-            except:
-                pass
-            
-        # Try multiple ways to find the model in the database
-        print(f"Searching with base64 format: base64://{model_id}")
-        cursor.execute("SELECT content, model_url FROM models WHERE model_url = %s", (f"base64://{model_id}",))
-        result = cursor.fetchone()
         
-        # If not found, try finding by the model_id in the URL
-        if not result:
-            print(f"Model not found with base64 format, trying URL format")
-            search_pattern = f"%{model_id}%"
-            cursor.execute("SELECT content, model_url FROM models WHERE model_url LIKE %s", (search_pattern,))
-            result = cursor.fetchone()
+        # Extract the UUID from the URL if needed
+        # Sometimes model_id is the UUID, sometimes it's in the URL
+        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+        uuid_match = re.search(uuid_pattern, model_id)
+        
+        # If model_id itself contains a UUID, use that
+        extracted_uuid = None
+        if uuid_match:
+            extracted_uuid = uuid_match.group(1)
+            print(f"📋 Extracted UUID from model_id: {extracted_uuid}")
+        
+        content = None
+        found_model = False
+        
+        # STEP 1: Check models table using the URL
+        cursor.execute("SELECT id, model_url, content FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
+        url_result = cursor.fetchone()
+        
+        if url_result:
+            found_model = True
+            model_db_id = url_result[0]
+            model_url = url_result[1]
+            content = url_result[2]
+            print(f"✅ Found model via URL pattern: DB ID={model_db_id}, URL={model_url}")
             
-        if not result:
-            print(f"Model not found with URL pattern {search_pattern}")
-            # Try one more time with exact model_id
-            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (model_id,))
-            large_result = cursor.fetchone()
-            if large_result:
-                print(f"Found model content in large_model_content table")
-                content = large_result[0]
-            else:
-                print(f"Model not found: {model_id}")
-                return jsonify({"error": "Model not found", "model_id": model_id}), 404
-        else:
-            content = result[0]
-            found_url = result[1]
-            print(f"Found model with URL: {found_url}")
-            
-        # Check if we have content stored
-        if not content:
-            # Try to get it from large_model_content table
-            print(f"Model found but no content stored in models table. Checking large_model_content for: {model_id}")
-            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (model_id,))
+            # Try to extract UUID from model_url if we didn't get it already
+            if not extracted_uuid:
+                uuid_match = re.search(uuid_pattern, model_url)
+                if uuid_match:
+                    extracted_uuid = uuid_match.group(1)
+                    print(f"📋 Extracted UUID from model_url: {extracted_uuid}")
+        
+        # STEP 2: If content is not found but we have a UUID, check large_model_content
+        if (not content or not content.strip()) and extracted_uuid:
+            print(f"🔍 Checking large_model_content table with UUID: {extracted_uuid}")
+            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (extracted_uuid,))
             large_result = cursor.fetchone()
             
             if large_result and large_result[0]:
                 content = large_result[0]
-                print(f"Content found in large_model_content table")
-            else:
-                print(f"No content found in either table for model: {model_id}")
-                return jsonify({"error": "Model content not available", "model_id": model_id}), 404
+                print(f"✅ Found content in large_model_content table for UUID: {extracted_uuid}")
+        
+        # STEP 3: If still no content, check large_model_content with the filename
+        if not content and not extracted_uuid:
+            print(f"🔍 Checking large_model_content table for any entry matching filename")
+            cursor.execute("SELECT model_id, content FROM large_model_content LIMIT 50")
+            all_large_models = cursor.fetchall()
+            
+            for lm in all_large_models:
+                large_model_id = lm[0]
+                large_content = lm[1]
+                print(f"📊 Found large model ID: {large_model_id}")
+                
+                if large_content:
+                    content = large_content
+                    print(f"✅ Using content from large model: {large_model_id}")
+                    break
+        
+        # If we still don't have content, report a 404
+        if not content or not content.strip():
+            error_msg = "Model content not available"
+            if found_model:
+                error_msg = "Model found but content is empty"
+            print(f"❌ {error_msg}")
+            return jsonify({
+                "error": error_msg,
+                "model_id": model_id,
+                "extracted_uuid": extracted_uuid
+            }), 404
         
         # Convert base64 back to binary
         try:
             decoded_content = base64.b64decode(content)
             content_size = len(decoded_content)
-            print(f"Successfully decoded content, size: {content_size} bytes")
-            if content_size < 100:
-                # Log first few bytes to check if valid
-                print(f"WARNING: Very small content ({content_size} bytes): {decoded_content[:20]}")
+            print(f"✅ Successfully decoded content, size: {content_size} bytes")
         except Exception as e:
-            print(f"Failed to decode base64 content: {e}")
-            print(f"First 100 chars of content: {content[:100] if content else 'None'}")
-            return jsonify({"error": "Failed to process model data", "details": str(e)}), 500
+            print(f"❌ Failed to decode base64 content: {e}")
+            return jsonify({"error": "Failed to decode model content", "details": str(e)}), 500
         
         # Determine content type based on filename
         content_type = 'application/octet-stream'  # Default
@@ -555,11 +564,12 @@ def serve_model(model_id, filename):
         response = make_response(decoded_content)
         response.headers.set('Content-Type', content_type)
         response.headers.set('Access-Control-Allow-Origin', '*')
-        print(f"Returning model content of type {content_type}, size {len(decoded_content)} bytes")
+        response.headers.set('Cache-Control', 'public, max-age=31536000')  # Cache for 1 year
+        print(f"🚀 Returning model content of type {content_type}, size {content_size} bytes")
         return response
         
     except Exception as e:
-        print(f"Error serving model {model_id}/{filename}: {e}")
+        print(f"❌ Error serving model {model_id}/{filename}: {e}")
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": "Server error", "details": str(e)}), 500
@@ -822,22 +832,22 @@ def save_model_to_storage(file_data):
     try:
         # Check if valid base64 content
         if not file_data.get('content'):
-            print("Missing content in file data")
+            print("❌ Missing content in file data")
             return None
             
         # Ensure database connection
         if not ensure_db_connection():
-            print("Database connection unavailable, cannot save model")
+            print("❌ Database connection unavailable, cannot save model")
             return None
             
         # Generate a unique ID for the model
         model_id = str(uuid.uuid4())
         filename = file_data.get('filename', file_data.get('name', 'model.glb'))
-        print(f"Saving model with ID: {model_id}, filename: {filename}")
+        print(f"📌 Saving model with ID: {model_id}, filename: {filename}")
         
         # Check size of content
         content_size = file_data.get('size', len(file_data['content']))
-        print(f"Content size: {content_size} bytes")
+        print(f"📊 Content size: {content_size} bytes")
         
         # Begin a transaction
         cursor.execute("BEGIN")
@@ -852,7 +862,7 @@ def save_model_to_storage(file_data):
         
         if not cursor.fetchone()[0]:
             # Create large_model_content table if it doesn't exist
-            print("Creating large_model_content table")
+            print("📋 Creating large_model_content table")
             cursor.execute("""
                 CREATE TABLE large_model_content (
                     model_id TEXT PRIMARY KEY,
@@ -871,7 +881,7 @@ def save_model_to_storage(file_data):
         
         if not cursor.fetchone()[0]:
             # Add content_size column if it doesn't exist
-            print("Adding content_size column to models table")
+            print("📋 Adding content_size column to models table")
             cursor.execute("ALTER TABLE models ADD COLUMN content_size BIGINT")
             
         # Extract proper telegram_id with fallback to avoid 'unknown'
@@ -883,48 +893,53 @@ def save_model_to_storage(file_data):
         model_path = f"/models/{model_id}/{filename}"
         model_url = f"{BASE_URL}{model_path}"
         
+        print(f"🔗 Generated URL: {model_url}")
+        
+        # Always store content in large_model_content table for backup
+        try:
+            cursor.execute(
+                "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
+                (model_id, file_data['content'])
+            )
+            print(f"✅ Content stored in large_model_content table with ID: {model_id}")
+        except Exception as e:
+            print(f"❌ Error storing in large_model_content: {e}")
+            # Continue anyway, might work in models table
+        
         # Store the model information in the database with different strategies based on size
         if content_size > 1024 * 1024:  # If larger than 1MB
-            print(f"Large content detected ({content_size} bytes), storing reference only")
+            print(f"📊 Large content detected ({content_size} bytes), storing reference only")
             # For large models, store the model reference
             try:
                 cursor.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
                     (telegram_id, filename, model_url, content_size, datetime.now())
                 )
-                
-                # Store content in a separate table for large content
-                cursor.execute(
-                    "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
-                    (model_id, file_data['content'])
-                )
+                print(f"✅ Model reference stored in models table")
             except psycopg2.Error as e:
                 # Check if error is due to missing column
                 if "column" in str(e) and "does not exist" in str(e):
-                    print(f"Column error: {e}, trying with available columns")
+                    print(f"⚠️ Column error: {e}, trying with available columns")
                     # Try with just the essential columns
                     cursor.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
                         (telegram_id, filename, model_url)
                     )
-                    cursor.execute(
-                        "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
-                        (model_id, file_data['content'])
-                    )
                 else:
                     raise
         else:
             # For smaller models, store the content directly
-            print(f"Standard content size ({content_size} bytes), storing directly")
+            print(f"📊 Standard content size ({content_size} bytes), storing directly")
             try:
                 cursor.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content, content_size, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
                     (telegram_id, filename, model_url, file_data['content'], content_size, datetime.now())
                 )
+                print(f"✅ Model with content stored in models table")
             except psycopg2.Error as e:
                 # Check if error is due to missing column
                 if "column" in str(e) and "does not exist" in str(e):
-                    print(f"Column error: {e}, trying with available columns")
+                    print(f"⚠️ Column error: {e}, trying with available columns")
                     # Try with just the essential columns
                     cursor.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s)",
@@ -935,7 +950,17 @@ def save_model_to_storage(file_data):
         
         # Commit the transaction
         conn.commit()
-        print(f"Successfully saved model {model_id} to database")
+        print(f"✅ Successfully saved model {model_id} to database")
+        
+        # For debugging, try to verify the content was stored
+        try:
+            cursor.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
+            if cursor.fetchone():
+                print(f"✅ Verified: Content exists in large_model_content table")
+            else:
+                print(f"⚠️ Warning: Content not found in large_model_content table")
+        except Exception as verify_err:
+            print(f"⚠️ Error verifying content: {verify_err}")
         
         # Return the path portion for the model
         return model_path
@@ -944,7 +969,7 @@ def save_model_to_storage(file_data):
         # Rollback in case of error
         if conn:
             conn.rollback()
-        print(f"Error saving model to storage: {e}")
+        print(f"❌ Error saving model to storage: {e}")
         import traceback
         print(traceback.format_exc())
         return None
