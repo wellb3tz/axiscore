@@ -711,6 +711,11 @@ def miniapp():
             // Always show debug info in Telegram
             if (webApp) {{
                 debugInfo.style.display = 'block';
+                showDebug('Debug mode enabled. Base URL: ' + baseUrl + '\\nInitial model URL: ' + modelUrl);
+            }} else {{
+                // Show debug info for browser testing
+                debugInfo.style.display = 'block';
+                showDebug('Browser mode. Base URL: ' + baseUrl + '\\nInitial model URL: ' + modelUrl);
             }}
             
             // Show debugging info
@@ -804,8 +809,9 @@ def miniapp():
                 
                 loadModel();
             }} else {{
-                errorDiv.textContent = 'No model URL provided';
+                errorDiv.textContent = 'No model loaded. Send a 3D model to the Telegram bot (@AxisCoreBot) to view it here.';
                 errorDiv.style.display = 'block';
+                showDebug('No model URL provided. This app requires a model parameter in the URL (e.g., ?model=<model_id> or ?uuid=<uuid>)');
             }}
             
             function animate() {{
