@@ -220,9 +220,17 @@ def webhook():
                         # Send message with options
                         response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
                         
-                        # Create a simpler keyboard with just the Browser option
+                        # Create a combined keyboard with both options
                         keyboard = {
                             'inline_keyboard': [
+                                [
+                                    {
+                                        'text': '📱 Open in Axiscore (Recommended)',
+                                        'web_app': {
+                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                                        }
+                                    }
+                                ],
                                 [
                                     {
                                         'text': '🌐 Open in Browser',
@@ -232,7 +240,7 @@ def webhook():
                             ]
                         }
                         
-                        # Send the message with keyboard
+                        # Send the message with combined keyboard
                         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                         payload = {
                             'chat_id': chat_id,
@@ -240,27 +248,6 @@ def webhook():
                             'reply_markup': keyboard
                         }
                         requests.post(url, json=payload)
-                        
-                        # Also send a WebApp button which is the recommended option
-                        webapp_button = {
-                            'inline_keyboard': [
-                                [
-                                    {
-                                        'text': '📱 Open in Axiscore (Recommended)',
-                                        'web_app': {
-                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
-                                        }
-                                    }
-                                ]
-                            ]
-                        }
-                        
-                        webapp_payload = {
-                            'chat_id': chat_id,
-                            'text': "For the best experience, use this button:",
-                            'reply_markup': webapp_button
-                        }
-                        requests.post(url, json=webapp_payload)
                         
                         return jsonify({"status": "ok"}), 200
                     else:
