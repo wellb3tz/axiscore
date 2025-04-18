@@ -704,24 +704,13 @@ def miniapp():
             // Initialize Telegram WebApp
             const webApp = window.Telegram?.WebApp;
             let modelUrl = '{js_model_url}';
+            const baseUrl = '{BASE_URL}';  // Define baseUrl for JavaScript
             const debugInfo = document.getElementById('debug-info');
+            const errorDiv = document.getElementById('error');
             
-            // Handle Telegram startapp parameter if available
+            // Always show debug info in Telegram
             if (webApp) {{
-                const startParam = webApp.initDataUnsafe?.start_param;
-                if (startParam && (modelUrl === '' || startParam.includes('-'))) {{
-                    console.log('Using start parameter from Telegram:', startParam);
-                    // If it looks like a UUID, append it to the URL
-                    if (startParam.includes('-')) {{
-                        const uuid = startParam;
-                        const currentUrl = new URL(window.location.href);
-                        currentUrl.searchParams.set('uuid', uuid);
-                        window.location.href = currentUrl.toString();
-                    }}
-                }}
-                // Tell Telegram we're ready
-                webApp.ready();
-                webApp.expand();
+                debugInfo.style.display = 'block';
             }}
             
             // Show debugging info
@@ -730,19 +719,25 @@ def miniapp():
                 debugInfo.style.display = 'block';
             }}
             
-            // Show debug with model ID
-            if (modelUrl) {{
-                const modelId = modelUrl.split('/').filter(part => part.length > 10).pop();
-                showDebug('Model URL: ' + modelUrl + '\\nModel ID: ' + (modelId || 'unknown'));
+            // Handle Telegram startapp parameter if available
+            if (webApp) {{
+                const startParam = webApp.initDataUnsafe?.start_param;
+                showDebug('Telegram WebApp detected!\\nStart param: ' + (startParam || 'none'));
                 
-                // Add link to model info
-                if (modelId) {{
-                    const infoLink = document.createElement('a');
-                    infoLink.href = '/model-info/' + modelId;
-                    infoLink.textContent = '\\nView Model Info';
-                    infoLink.target = '_blank';
-                    debugInfo.appendChild(infoLink);
+                if (startParam) {{
+                    console.log('Using start parameter from Telegram:', startParam);
+                    
+                    // If modelUrl is empty or start_param looks like a UUID, use start_param
+                    if (modelUrl === '' || startParam.includes('-')) {{
+                        const uuid = startParam;
+                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                        showDebug('Using model from Telegram parameter:\\n' + modelUrl);
+                    }}
                 }}
+                
+                // Tell Telegram we're ready
+                webApp.ready();
+                webApp.expand();
             }}
             
             const scene = new THREE.Scene();
@@ -798,7 +793,6 @@ def miniapp():
                         // Error callback
                         (error) => {{
                             console.error('Error loading model:', error);
-                            const errorDiv = document.getElementById('error');
                             errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
                             errorDiv.style.display = 'block';
                             
@@ -810,7 +804,6 @@ def miniapp():
                 
                 loadModel();
             }} else {{
-                const errorDiv = document.getElementById('error');
                 errorDiv.textContent = 'No model URL provided';
                 errorDiv.style.display = 'block';
             }}
