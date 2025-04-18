@@ -163,7 +163,7 @@ def webhook():
         mime_type = document.get('mime_type', '')
         
         # Check if it's a 3D model file
-        if file_name.lower().endswith(('.glb', '.gltf')) or 'model' in mime_type.lower():
+        if file_name.lower().endswith(('.glb', '.gltf', '.fbx')) or 'model' in mime_type.lower():
             # Download file from Telegram
             try:
                 print(f"Processing file: {file_name}, ID: {file_id}")
@@ -277,16 +277,16 @@ def webhook():
                 print(traceback.format_exc())
                 send_message(chat_id, "Failed to process your 3D model. Please try again.")
         else:
-            send_message(chat_id, "Please send a 3D model file (.glb or .gltf).")
+            send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).")
     # Handle text messages
     else:
         # Check for specific commands
         if text.lower() == '/start':
-            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb or .gltf) and I'll generate an interactive preview for you."
+            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, or .fbx) and I'll generate an interactive preview for you."
         elif text.lower() == '/help':
             response_text = """
 Axiscore 3D Model Viewer Help:
-• Send a 3D model file (.glb or .gltf) directly to this chat
+• Send a 3D model file (.glb, .gltf, or .fbx) directly to this chat
 • I'll create an interactive viewer link
 • Click "Open in Axiscore" to view and interact with your model
 • Use pinch/scroll to zoom, drag to rotate
@@ -294,7 +294,7 @@ Axiscore 3D Model Viewer Help:
             """
         else:
             # Generic response for other messages
-            response_text = f"Send me a 3D model file (.glb or .gltf) to view it in Axiscore. You said: {text}"
+            response_text = f"Send me a 3D model file (.glb, .gltf, or .fbx) to view it in Axiscore. You said: {text}"
         
         send_message(chat_id, response_text)
     
@@ -346,6 +346,8 @@ def view_model():
         <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
         <script>
             const container = document.getElementById('model-container');
             const scene = new THREE.Scene();
@@ -369,37 +371,76 @@ def view_model():
             controls.enableDamping = true;
             controls.dampingFactor = 0.25;
             
-            const loader = new THREE.GLTFLoader();
-            loader.load(
-                '{model_url}',
-                (gltf) => {{
-                    // Center model
-                    const box = new THREE.Box3().setFromObject(gltf.scene);
-                    const center = box.getCenter(new THREE.Vector3());
-                    const size = box.getSize(new THREE.Vector3());
-                    
-                    gltf.scene.position.x = -center.x;
-                    gltf.scene.position.y = -center.y;
-                    gltf.scene.position.z = -center.z;
-                    
-                    // Adjust camera
-                    const maxDim = Math.max(size.x, size.y, size.z);
-                    const fov = camera.fov * (Math.PI / 180);
-                    const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-                    
-                    camera.position.z = cameraDistance * 1.5;
-                    camera.updateProjectionMatrix();
-                    
-                    scene.add(gltf.scene);
-                }},
-                (xhr) => {{
-                    console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
-                }},
-                (error) => {{
-                    console.error('Error loading model:', error);
-                    document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
-                }}
-            );
+            // Determine which loader to use based on file extension
+            const fileExtension = '{model_url}'.split('.').pop().toLowerCase();
+            
+            if (fileExtension === 'fbx') {{
+                // Use FBXLoader for FBX files
+                const loader = new THREE.FBXLoader();
+                loader.load(
+                    '{model_url}',
+                    (object) => {{
+                        // Center model
+                        const box = new THREE.Box3().setFromObject(object);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = box.getSize(new THREE.Vector3());
+                        
+                        object.position.x = -center.x;
+                        object.position.y = -center.y;
+                        object.position.z = -center.z;
+                        
+                        // Adjust camera
+                        const maxDim = Math.max(size.x, size.y, size.z);
+                        const fov = camera.fov * (Math.PI / 180);
+                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                        
+                        camera.position.z = cameraDistance * 1.5;
+                        camera.updateProjectionMatrix();
+                        
+                        scene.add(object);
+                    }},
+                    (xhr) => {{
+                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                    }},
+                    (error) => {{
+                        console.error('Error loading model:', error);
+                        document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
+                    }}
+                );
+            }} else {{
+                // Use GLTFLoader for GLB/GLTF files (default)
+                const loader = new THREE.GLTFLoader();
+                loader.load(
+                    '{model_url}',
+                    (gltf) => {{
+                        // Center model
+                        const box = new THREE.Box3().setFromObject(gltf.scene);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = box.getSize(new THREE.Vector3());
+                        
+                        gltf.scene.position.x = -center.x;
+                        gltf.scene.position.y = -center.y;
+                        gltf.scene.position.z = -center.z;
+                        
+                        // Adjust camera
+                        const maxDim = Math.max(size.x, size.y, size.z);
+                        const fov = camera.fov * (Math.PI / 180);
+                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                        
+                        camera.position.z = cameraDistance * 1.5;
+                        camera.updateProjectionMatrix();
+                        
+                        scene.add(gltf.scene);
+                    }},
+                    (xhr) => {{
+                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                    }},
+                    (error) => {{
+                        console.error('Error loading model:', error);
+                        document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
+                    }}
+                );
+            }}
             
             window.addEventListener('resize', () => {{
                 camera.aspect = window.innerWidth / window.innerHeight;
@@ -591,6 +632,8 @@ def serve_model(model_id, filename):
             content_type = 'model/gltf-binary'
         elif filename.lower().endswith('.gltf'):
             content_type = 'model/gltf+json'
+        elif filename.lower().endswith('.fbx'):
+            content_type = 'application/octet-stream'  # FBX doesn't have an official MIME type
         
         # Set CORS headers to allow loading from any origin
         response = make_response(decoded_content)
@@ -605,6 +648,205 @@ def serve_model(model_id, filename):
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": "Server error", "details": str(e)}), 500
+
+@app.route('/viewer')
+def model_viewer():
+    model_param = request.args.get('model', '')
+    
+    # Construct model URL based on the model parameter
+    model_url = ""
+    if model_param.startswith('http'):
+        # If it's already a URL, use it directly
+        model_url = model_param
+    elif model_param.startswith('/uploads/'):
+        # If it's a path to an uploaded file
+        model_url = f"{BASE_URL}{model_param}"
+    else:
+        # Assume it's a model ID from the database
+        model_url = f"{BASE_URL}/model/{model_param}"
+    
+    # HTML for the model viewer page
+    html = f'''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>3D Model Viewer</title>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/libs/fflate.min.js"></script>
+        <style>
+            body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; }}
+            .container {{ position: relative; width: 100%; height: 100%; }}
+            #model-viewer {{ width: 100%; height: 100%; }}
+            .loading {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; color: white; background-color: rgba(0, 0, 0, 0.7); padding: 20px; border-radius: 10px; text-align: center; }}
+            .error {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; color: white; background-color: rgba(255, 0, 0, 0.7); padding: 20px; border-radius: 10px; text-align: center; max-width: 80%; }}
+            #debug {{ position: absolute; bottom: 0; left: 0; background-color: rgba(0, 0, 0, 0.7); color: white; padding: 5px; font-size: 12px; max-width: 100%; max-height: 30%; overflow-y: auto; display: none; }}
+            .ar-button {{ position: absolute; bottom: 20px; right: 20px; background-color: #007bff; color: white; border: none; border-radius: 20px; padding: 10px 20px; font-size: 16px; cursor: pointer; display: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <model-viewer id="model-viewer" src="{model_url}" ar ar-modes="webxr scene-viewer quick-look" camera-controls auto-rotate></model-viewer>
+            <div id="loading" class="loading">Loading model...</div>
+            <div id="error" class="error" style="display: none;"></div>
+            <div id="debug"></div>
+            <button id="ar-button" class="ar-button">View in AR</button>
+        </div>
+        
+        <script>
+            // Initialize Telegram WebApp
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+            
+            const modelViewer = document.getElementById('model-viewer');
+            const loadingMessage = document.getElementById('loading');
+            const errorMessage = document.getElementById('error');
+            const debugElement = document.getElementById('debug');
+            const arButton = document.getElementById('ar-button');
+            
+            // Get the start parameter (if any)
+            const startParam = tg.initDataUnsafe && tg.initDataUnsafe.start_param 
+                ? tg.initDataUnsafe.start_param 
+                : null;
+            
+            // Debug function to display messages
+            function debug(message) {{
+                if (debugElement) {{
+                    debugElement.style.display = 'block';
+                    debugElement.innerHTML += message + '<br>';
+                }}
+                console.log(message);
+            }}
+            
+            // Uncomment to display debug info
+            // debug('Model URL: {model_url}');
+            // debug('Start param: ' + startParam);
+            
+            // Set up model-viewer events
+            modelViewer.addEventListener('load', () => {{
+                loadingMessage.style.display = 'none';
+                
+                // Check if AR is available
+                if (modelViewer.canActivateAR) {{
+                    arButton.style.display = 'block';
+                }}
+            }});
+            
+            modelViewer.addEventListener('error', (event) => {{
+                loadingMessage.style.display = 'none';
+                errorMessage.style.display = 'block';
+                errorMessage.textContent = 'Error loading model. Please try again.';
+                debug('Error: ' + JSON.stringify(event.detail));
+            }});
+            
+            // Custom AR button
+            arButton.addEventListener('click', () => {{
+                modelViewer.activateAR();
+            }});
+            
+            // Fallback to Three.js if model-viewer doesn't work or no model URL
+            if (!'{model_url}') {{
+                loadingMessage.style.display = 'none';
+                errorMessage.style.display = 'block';
+                errorMessage.textContent = 'No model URL provided.';
+            }}
+
+            // Handle 3D file formats not supported by model-viewer (like FBX)
+            const fileExtension = '{model_url}'.split('.').pop().toLowerCase();
+            if (fileExtension === 'fbx') {{
+                // Hide model-viewer and create three.js container
+                modelViewer.style.display = 'none';
+                const threeContainer = document.createElement('div');
+                threeContainer.style.width = '100%';
+                threeContainer.style.height = '100%';
+                document.querySelector('.container').appendChild(threeContainer);
+                
+                // Initialize three.js
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0xf0f0f0);
+                
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.z = 5;
+                
+                const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                threeContainer.appendChild(renderer.domElement);
+                
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(1, 1, 1);
+                scene.add(directionalLight);
+                
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                
+                // Load FBX model
+                const loader = new THREE.FBXLoader();
+                loader.load(
+                    '{model_url}',
+                    (object) => {{
+                        loadingMessage.style.display = 'none';
+                        
+                        // Center model
+                        const box = new THREE.Box3().setFromObject(object);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = box.getSize(new THREE.Vector3());
+                        
+                        object.position.x = -center.x;
+                        object.position.y = -center.y;
+                        object.position.z = -center.z;
+                        
+                        // Adjust camera
+                        const maxDim = Math.max(size.x, size.y, size.z);
+                        const fov = camera.fov * (Math.PI / 180);
+                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                        
+                        camera.position.z = cameraDistance * 1.5;
+                        camera.updateProjectionMatrix();
+                        
+                        scene.add(object);
+                    }},
+                    (xhr) => {{
+                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                    }},
+                    (error) => {{
+                        loadingMessage.style.display = 'none';
+                        errorMessage.style.display = 'block';
+                        errorMessage.textContent = 'Error loading FBX model: ' + error.message;
+                        debug('Error: ' + error.message);
+                    }}
+                );
+                
+                // Animation loop
+                function animate() {{
+                    requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                }}
+                animate();
+                
+                // Handle window resize
+                window.addEventListener('resize', () => {{
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                }});
+            }}
+        </script>
+    </body>
+    </html>
+    '''
+    
+    response = make_response(html)
+    response.headers['Content-Type'] = 'text/html'
+    return response
 
 @app.route('/miniapp')
 @app.route('/miniapp/')
@@ -723,6 +965,8 @@ def miniapp():
         <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
         <script>
             // Initialize Telegram WebApp
             const webApp = window.Telegram?.WebApp;
@@ -839,47 +1083,61 @@ def miniapp():
             
             if (modelUrl) {{
                 console.log('Loading model from URL:', modelUrl);
-                const loader = new THREE.GLTFLoader();
                 
-                // Add error handling to HTTP request
-                const loadModel = () => {{
-                    loader.load(modelUrl, 
-                        // Success callback
-                        (gltf) => {{
-                            scene.add(gltf.scene);
-                            
-                            // Center and scale model
-                            const box = new THREE.Box3().setFromObject(gltf.scene);
-                            const center = box.getCenter(new THREE.Vector3());
-                            const size = box.getSize(new THREE.Vector3());
-                            
-                            gltf.scene.position.x = -center.x;
-                            gltf.scene.position.y = -center.y;
-                            gltf.scene.position.z = -center.z;
-                            
-                            const maxDim = Math.max(size.x, size.y, size.z);
-                            camera.position.z = maxDim * 2;
-                        }}, 
-                        // Progress callback
-                        (xhr) => {{
-                            const percent = xhr.loaded / xhr.total * 100;
-                            if (xhr.total > 0) {{
-                                showDebug('Loading: ' + Math.round(percent) + '%');
-                            }}
-                        }},
-                        // Error callback
-                        (error) => {{
-                            console.error('Error loading model:', error);
-                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                            errorDiv.style.display = 'block';
-                            
-                            const modelIdFromUrl = modelUrl.split('/').filter(p => p).pop() || 'unknown';
-                            showDebug('Error loading model: ' + error.message + '\\nURL: ' + modelUrl + '\\nTry accessing /model-info/' + modelIdFromUrl);
-                        }}
-                    );
+                // Determine which loader to use based on file extension
+                const fileExtension = modelUrl.split('.').pop().toLowerCase();
+                
+                // Function to handle successful model load
+                const onModelLoad = (object) => {{
+                    scene.add(object);
+                    
+                    // Center and scale model
+                    const box = new THREE.Box3().setFromObject(object);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    
+                    object.position.x = -center.x;
+                    object.position.y = -center.y;
+                    object.position.z = -center.z;
+                    
+                    // Adjust camera
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const fov = camera.fov * (Math.PI / 180);
+                    const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                    
+                    camera.position.z = cameraDistance * 1.5;
+                    camera.updateProjectionMatrix();
+                    
+                    scene.add(object);
                 }};
                 
-                loadModel();
+                // Progress callback for both loaders
+                const onProgress = (xhr) => {{
+                    const percent = xhr.loaded / xhr.total * 100;
+                    if (xhr.total > 0) {{
+                        showDebug('Loading: ' + Math.round(percent) + '%');
+                    }}
+                }};
+                
+                // Error callback for both loaders
+                const onError = (error) => {{
+                    console.error('Error loading model:', error);
+                    errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                    errorDiv.style.display = 'block';
+                    
+                    const modelIdFromUrl = modelUrl.split('/').filter(p => p).pop() || 'unknown';
+                    showDebug('Error loading model: ' + error.message + '\\nURL: ' + modelUrl + '\\nTry accessing /model-info/' + modelIdFromUrl);
+                }};
+                
+                if (fileExtension === 'fbx') {{
+                    // Use FBXLoader for FBX files
+                    const loader = new THREE.FBXLoader();
+                    loader.load(modelUrl, onModelLoad, onProgress, onError);
+                }} else {{
+                    // Use GLTFLoader for GLB/GLTF files (default)
+                    const loader = new THREE.GLTFLoader();
+                    loader.load(modelUrl, (gltf) => onModelLoad(gltf.scene), onProgress, onError);
+                }}
             }} else {{
                 errorDiv.textContent = 'No model loaded. Send a 3D model to the Telegram bot (@AxisCoreBot) to view it here.';
                 errorDiv.style.display = 'block';
@@ -898,11 +1156,25 @@ def miniapp():
     </html>
     """
 
+@app.route('/help')
+def help_page():
+    return """
+    <h1>Axiscore 3D Model Viewer API</h1>
+    <p>This API allows you to view and share 3D models via Telegram.</p>
+    <p>Supported file formats:</p>
+    <ul>
+        <li>glTF/GLB (.glb, .gltf)</li>
+        <li>Filmbox (.fbx)</li>
+    </ul>
+    <p>To use this service, send your 3D model file to the Telegram bot: @AxisCoreBot</p>
+    """
+
 @app.route('/')
 def index():
     return jsonify({
         "status": "online",
-        "message": "3D Model Viewer API is running"
+        "message": "3D Model Viewer API is running",
+        "supported_formats": ["glb", "gltf", "fbx"]
     })
 
 def download_telegram_file(file_id):
@@ -1401,4 +1673,5 @@ def ensure_db_connection():
             return False
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
