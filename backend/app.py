@@ -31,6 +31,9 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 jwt = JWTManager(app)
 
+# Global variables for database connection
+conn = None
+cursor = None
 DATABASE_URL = os.getenv('DATABASE_URL')
 # Base URL for public-facing URLs (use environment variable or default to localhost)
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
@@ -48,6 +51,7 @@ if DATABASE_URL:
         except socket.gaierror:
             print(f"Could not resolve hostname {hostname}")
 
+# Initial database connection attempt
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor()
@@ -71,6 +75,15 @@ try:
             telegram_id TEXT NOT NULL UNIQUE,
             username TEXT,
             password TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Create large_model_content table if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS large_model_content (
+            model_id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -106,8 +119,8 @@ def telegram_auth():
     telegram_id = auth_data['id']
     username = auth_data.get('username', '')
 
-    # Check if database connection exists
-    if conn and cursor:
+    # Check if database connection exists and create user if needed
+    if ensure_db_connection():
         try:
             # Check if user exists, create if not
             cursor.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
@@ -154,6 +167,13 @@ def webhook():
             # Download file from Telegram
             try:
                 print(f"Processing file: {file_name}, ID: {file_id}")
+                
+                # Ensure database connection before proceeding
+                if not ensure_db_connection():
+                    print("Database connection unavailable, cannot process model")
+                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.")
+                    return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
+                    
                 file_data = download_telegram_file(file_id)
                 
                 if file_data:
@@ -378,9 +398,9 @@ def view_model():
 def get_models():
     telegram_id = get_jwt_identity()
     
-    # If database connection is not available
-    if not conn or not cursor:
-        return jsonify({"error": "Database connection not available"}), 503
+    # Ensure database connection
+    if not ensure_db_connection():
+        return jsonify({"error": "Database connection unavailable"}), 503
     
     try:
         cursor.execute("SELECT id, model_name, model_url, created_at FROM models WHERE telegram_id = %s", (telegram_id,))
@@ -411,9 +431,9 @@ def add_model():
     model_url = request.json['model_url']
     model_name = request.json.get('model_name', os.path.basename(urllib.parse.urlparse(model_url).path))
     
-    # If database connection is not available
-    if not conn or not cursor:
-        return jsonify({"error": "Database connection not available"}), 503
+    # Ensure database connection
+    if not ensure_db_connection():
+        return jsonify({"error": "Database connection unavailable"}), 503
     
     try:
         cursor.execute(
@@ -443,9 +463,10 @@ def serve_model(model_id, filename):
     try:
         print(f"Attempting to serve model: {model_id}/{filename}")
         
-        if not conn or not cursor:
-            print("No database connection available")
-            return jsonify({"error": "Server configuration error"}), 500
+        # Ensure database connection
+        if not ensure_db_connection():
+            print("Database connection unavailable")
+            return jsonify({"error": "Database connection unavailable"}), 500
         
         # Reset any failed transaction state
         try:
@@ -804,6 +825,11 @@ def save_model_to_storage(file_data):
             print("Missing content in file data")
             return None
             
+        # Ensure database connection
+        if not ensure_db_connection():
+            print("Database connection unavailable, cannot save model")
+            return None
+            
         # Generate a unique ID for the model
         model_id = str(uuid.uuid4())
         filename = file_data.get('filename', file_data.get('name', 'model.glb'))
@@ -1051,9 +1077,10 @@ def model_webhook():
 def model_info(model_id):
     """Get information about a model for debugging purposes."""
     try:
-        if not conn or not cursor:
-            return jsonify({"error": "No database connection"}), 500
-        
+        # Ensure database connection
+        if not ensure_db_connection():
+            return jsonify({"error": "Database connection unavailable"}), 500
+            
         # First, try to rollback any failed transaction to get clean state
         try:
             conn.rollback()
@@ -1108,8 +1135,9 @@ def model_info(model_id):
 def find_model_by_name(filename):
     """Find a model by its filename."""
     try:
-        if not conn or not cursor:
-            return jsonify({"error": "No database connection"}), 500
+        # Ensure database connection
+        if not ensure_db_connection():
+            return jsonify({"error": "Database connection unavailable"}), 500
             
         # Reset transaction state
         try:
@@ -1173,6 +1201,44 @@ def handle_500(e):
         "path": request.path,
         "method": request.method
     }), 500
+
+def ensure_db_connection():
+    """Ensure database connection is active, reconnect if needed."""
+    global conn, cursor, DATABASE_URL
+    
+    try:
+        # Check if connection is closed or cursor is None
+        if conn is None or cursor is None or conn.closed:
+            print("Database connection lost, reconnecting...")
+            # Reconnect to database
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cursor = conn.cursor()
+            print("Successfully reconnected to database")
+        
+        # Test connection with a simple query
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        return True
+    except Exception as e:
+        print(f"Failed to ensure database connection: {e}")
+        try:
+            # If connection exists but is broken, close it to avoid leaks
+            if conn and not conn.closed:
+                conn.close()
+        except:
+            pass
+        
+        try:
+            # Attempt to reconnect one more time
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cursor = conn.cursor()
+            print("Successfully reconnected to database after error")
+            return True
+        except Exception as reconnect_error:
+            print(f"Failed to reconnect to database: {reconnect_error}")
+            conn = None
+            cursor = None
+            return False
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
