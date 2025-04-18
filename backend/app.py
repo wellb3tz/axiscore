@@ -191,39 +191,48 @@ def webhook():
                         # Create a web app URL that works in both Telegram and browser
                         model_param = urllib.parse.quote(model_url)
                         
-                        # Direct web URL for browser access
-                        direct_url = f"{request.url_root}miniapp?model={model_param}"
-                        
                         # Extract UUID from model_url for a cleaner parameter
                         uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
                         uuid_match = re.search(uuid_pattern, model_url)
                         model_uuid = uuid_match.group(1) if uuid_match else "unknown"
                         
-                        # Use Telegram's t.me format with web app
-                        # The format should be: https://t.me/BOT_USERNAME/app
-                        # Where "app" should match your Mini App short_name in BotFather
+                        # Create multiple Telegram link formats for better compatibility
+                        # Format 1: Standard t.me link with startapp parameter
                         miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
                         
-                        # For debugging, log the URL
+                        # Format 2: Direct link to the miniapp with UUID in the query
+                        direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}"
+                        
+                        # Format 3: Direct link to the miniapp with model parameter
+                        model_direct_url = f"{BASE_URL}/miniapp?model={model_param}"
+                        
+                        # For debugging, log the URLs
                         print(f"Generated Mini App URL: {miniapp_url}")
-                        print(f"Generated direct URL: {direct_url}")
+                        print(f"Generated direct miniapp URL: {direct_miniapp_url}")
+                        print(f"Generated model direct URL: {model_direct_url}")
                         
-                        # Send message with both options
-                        response_text = f"3D model received: {file_name}\n\nUse the button below to view it in Telegram:"
+                        # Send message with multiple options
+                        response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
                         
-                        # Send inline button to open in Axiscore
+                        # Send inline buttons with all options
                         keyboard = {
                             'inline_keyboard': [
                                 [
                                     {
-                                        'text': 'Open in Axiscore',
+                                        'text': 'Open in Axiscore (Telegram)',
                                         'url': miniapp_url
                                     }
                                 ],
                                 [
                                     {
+                                        'text': 'Open in Axiscore (Direct)',
+                                        'url': direct_miniapp_url
+                                    }
+                                ],
+                                [
+                                    {
                                         'text': 'Open in Browser',
-                                        'url': direct_url
+                                        'url': model_direct_url
                                     }
                                 ]
                             ]
@@ -729,6 +738,7 @@ def miniapp():
                 const startParam = webApp.initDataUnsafe?.start_param;
                 showDebug('Telegram WebApp detected!\\nStart param: ' + (startParam || 'none'));
                 
+                // Try to get UUID from start param
                 if (startParam) {{
                     console.log('Using start parameter from Telegram:', startParam);
                     
@@ -737,6 +747,27 @@ def miniapp():
                         const uuid = startParam;
                         modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
                         showDebug('Using model from Telegram parameter:\\n' + modelUrl);
+                    }}
+                }} else {{
+                    // If no start param, try to extract UUID from URL
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const uuidParam = urlParams.get('uuid') || urlParams.get('startapp');
+                    
+                    if (uuidParam) {{
+                        console.log('Using UUID from URL parameters:', uuidParam);
+                        modelUrl = `${{baseUrl}}/models/${{uuidParam}}/model.glb`;
+                        showDebug('Using model from URL parameter:\\n' + modelUrl);
+                    }} else {{
+                        // Try to extract UUID from the URL path
+                        const urlPath = window.location.pathname;
+                        const uuidMatch = urlPath.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+                        
+                        if (uuidMatch) {{
+                            const uuid = uuidMatch[1];
+                            console.log('Extracted UUID from URL path:', uuid);
+                            modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                            showDebug('Using model from URL path:\\n' + modelUrl);
+                        }}
                     }}
                 }}
                 
