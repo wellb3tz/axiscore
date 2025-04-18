@@ -198,7 +198,12 @@ def webhook():
                         
                         # Create multiple Telegram link formats for better compatibility
                         # Format 1: Standard t.me link with startapp parameter
-                        miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
+                        # This format is supposed to pass the parameter via start_param but might not be working correctly
+                        # miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
+                        
+                        # Using a different format that might be more compatible with Telegram WebApps
+                        # Instead of using startapp, use a format that focuses on the bot username with the WebApp command
+                        miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
                         
                         # Format 2: Direct link to the miniapp with UUID in the query
                         direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}"
@@ -246,6 +251,31 @@ def webhook():
                             'reply_markup': keyboard
                         }
                         requests.post(url, json=payload)
+                        
+                        # Also send a WebApp button which uses a different approach
+                        try:
+                            webapp_button = {
+                                'inline_keyboard': [
+                                    [
+                                        {
+                                            'text': '📱 Open in WebApp (Recommended)',
+                                            'web_app': {
+                                                'url': f"{BASE_URL}/miniapp?uuid={model_uuid}"
+                                            }
+                                        }
+                                    ]
+                                ]
+                            }
+                            
+                            webapp_payload = {
+                                'chat_id': chat_id,
+                                'text': "For the most reliable experience, use this WebApp button:",
+                                'reply_markup': webapp_button
+                            }
+                            requests.post(url, json=webapp_payload)
+                        except Exception as e:
+                            print(f"Error sending WebApp button: {e}")
+                            # Continue even if this fails
                         
                         return jsonify({"status": "ok"}), 200
                     else:
@@ -736,7 +766,9 @@ def miniapp():
             // Handle Telegram startapp parameter if available
             if (webApp) {{
                 const startParam = webApp.initDataUnsafe?.start_param;
-                showDebug('Telegram WebApp detected!\\nStart param: ' + (startParam || 'none'));
+                const startCommand = webApp.initDataUnsafe?.start_command;
+                showDebug('Telegram WebApp detected!\\nStart param: ' + (startParam || 'none') + 
+                          '\\nStart command: ' + (startCommand || 'none'));
                 
                 // Try to get UUID from start param
                 if (startParam) {{
@@ -748,10 +780,35 @@ def miniapp():
                         modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
                         showDebug('Using model from Telegram parameter:\\n' + modelUrl);
                     }}
+                }} else if (startCommand) {{
+                    // Some versions of Telegram might pass the parameter as a start_command
+                    console.log('Using start command from Telegram:', startCommand);
+                    
+                    // Extract UUID from start command if it looks like one
+                    const uuidMatch = startCommand.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+                    if (uuidMatch) {{
+                        const uuid = uuidMatch[1];
+                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                        showDebug('Using model from Telegram start command:\\n' + modelUrl);
+                    }}
                 }} else {{
                     // If no start param, try to extract UUID from URL
                     const urlParams = new URLSearchParams(window.location.search);
-                    const uuidParam = urlParams.get('uuid') || urlParams.get('startapp');
+                    let uuidParam = urlParams.get('uuid') || urlParams.get('startapp');
+                    
+                    // Check for "start" parameter which is used in Telegram bot start commands
+                    if (!uuidParam) {{
+                        const startValue = urlParams.get('start');
+                        if (startValue) {{
+                            // Extract UUID from start value if it looks like one
+                            const uuidMatch = startValue.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+                            if (uuidMatch) {{
+                                uuidParam = uuidMatch[1];
+                            }} else {{
+                                uuidParam = startValue;
+                            }}
+                        }}
+                    }}
                     
                     if (uuidParam) {{
                         console.log('Using UUID from URL parameters:', uuidParam);
