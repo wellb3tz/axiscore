@@ -447,6 +447,12 @@ def serve_model(model_id, filename):
             print("No database connection available")
             return jsonify({"error": "Server configuration error"}), 500
         
+        # Reset any failed transaction state
+        try:
+            conn.rollback()
+        except:
+            pass
+            
         # DEBUG: Print all models in the database to help diagnose
         try:
             cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models LIMIT 10")
@@ -456,6 +462,11 @@ def serve_model(model_id, filename):
                 print(f"  ID: {model[0]}, TG: {model[1]}, Name: {model[2]}, URL: {model[3]}")
         except Exception as e:
             print(f"Error listing models: {e}")
+            # Try to recover from listing error
+            try:
+                conn.rollback()
+            except:
+                pass
             
         # Try multiple ways to find the model in the database
         print(f"Searching with base64 format: base64://{model_id}")
@@ -1042,6 +1053,12 @@ def model_info(model_id):
     try:
         if not conn or not cursor:
             return jsonify({"error": "No database connection"}), 500
+        
+        # First, try to rollback any failed transaction to get clean state
+        try:
+            conn.rollback()
+        except:
+            pass
             
         # Check for model in models table
         cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
@@ -1075,6 +1092,68 @@ def model_info(model_id):
         })
         
     except Exception as e:
+        # Always rollback on error
+        try:
+            conn.rollback()
+        except:
+            pass
+            
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+@app.route('/find-model-by-name/<filename>')
+def find_model_by_name(filename):
+    """Find a model by its filename."""
+    try:
+        if not conn or not cursor:
+            return jsonify({"error": "No database connection"}), 500
+            
+        # Reset transaction state
+        try:
+            conn.rollback()
+        except:
+            pass
+            
+        # Search by filename
+        cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models WHERE model_name = %s", (filename,))
+        models = cursor.fetchall()
+        
+        results = []
+        for model in models:
+            model_id = model[0]
+            telegram_id = model[1]
+            model_name = model[2]
+            model_url = model[3]
+            
+            # Check if content exists
+            cursor.execute("SELECT content FROM models WHERE id = %s", (model_id,))
+            content_result = cursor.fetchone()
+            has_content = content_result is not None and content_result[0] is not None
+            
+            results.append({
+                "id": model_id,
+                "telegram_id": telegram_id,
+                "model_name": model_name,
+                "model_url": model_url,
+                "has_content": has_content
+            })
+            
+        return jsonify({
+            "filename": filename,
+            "models_found": len(results),
+            "models": results
+        })
+        
+    except Exception as e:
+        # Always rollback on error
+        try:
+            conn.rollback()
+        except:
+            pass
+            
         import traceback
         return jsonify({
             "error": str(e),
