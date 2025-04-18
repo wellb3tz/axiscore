@@ -188,13 +188,13 @@ def webhook():
                         bot_info = requests.get(bot_info_url).json()
                         bot_username = bot_info.get('result', {}).get('username', '')
                         
-                        # Create a web app URL that works in both Telegram and browser
-                        model_param = urllib.parse.quote(model_url)
-                        
                         # Extract UUID from model_url for a cleaner parameter
                         uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
                         uuid_match = re.search(uuid_pattern, model_url)
                         model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                        
+                        # Extract file extension to ensure proper loading
+                        file_extension = os.path.splitext(file_name)[1].lower()
                         
                         # Create multiple Telegram link formats for better compatibility
                         # Format 1: Standard t.me link with startapp parameter
@@ -206,15 +206,16 @@ def webhook():
                         miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
                         
                         # Format 2: Direct link to the miniapp with UUID in the query
-                        direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}"
+                        direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
                         
                         # Format 3: Direct link to the miniapp with model parameter
-                        model_direct_url = f"{BASE_URL}/miniapp?model={model_param}"
+                        model_direct_url = f"{BASE_URL}/miniapp?model={model_url}"
                         
                         # For debugging, log the URLs
                         print(f"Generated Mini App URL: {miniapp_url}")
                         print(f"Generated direct miniapp URL: {direct_miniapp_url}")
                         print(f"Generated model direct URL: {model_direct_url}")
+                        print(f"File extension: {file_extension}")
                         
                         # Send message with options
                         response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
@@ -247,7 +248,7 @@ def webhook():
                                     {
                                         'text': '📱 Open in Axiscore (Recommended)',
                                         'web_app': {
-                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}"
+                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
                                         }
                                     }
                                 ]
@@ -855,22 +856,45 @@ def miniapp():
     # Log the request for debugging
     model_param = request.args.get('model', '')
     uuid_param = request.args.get('uuid', '')
+    ext_param = request.args.get('ext', '')
     
+    # If ext param is provided, use it
+    if ext_param and ext_param.startswith('.'):
+        file_extension = ext_param
+    else:
+        file_extension = ".glb"  # Default
+        
     # If we have a UUID directly (from Telegram), use it to construct model URL
     if uuid_param and not model_param:
         print(f"Received UUID parameter: {uuid_param}")
         # Search for a model with this UUID
         if ensure_db_connection():
             try:
-                cursor.execute("SELECT model_url FROM models WHERE model_url LIKE %s", (f"%{uuid_param}%",))
+                # Also get the model_name to determine correct file extension
+                cursor.execute("SELECT model_url, model_name FROM models WHERE model_url LIKE %s", (f"%{uuid_param}%",))
                 result = cursor.fetchone()
                 if result and result[0]:
                     model_param = result[0]
+                    model_name = result[1] if len(result) > 1 else ""
                     print(f"Found model URL from UUID: {model_param}")
+                    
+                    # Store the file extension for possible use later
+                    if not ext_param:  # Only override if not explicitly provided
+                        if model_name and '.' in model_name:
+                            file_extension = os.path.splitext(model_name)[1].lower()
+                        else:
+                            # Try to extract extension from the URL
+                            url_parts = model_param.split('.')
+                            if len(url_parts) > 1:
+                                file_extension = f".{url_parts[-1].lower()}"
+                            else:
+                                file_extension = ".glb"  # Default fallback
                 else:
                     print(f"No model found for UUID: {uuid_param}")
             except Exception as e:
                 print(f"Error finding model for UUID: {e}")
+    
+    print(f"Using file extension: {file_extension}")
     
     # Clean up the model_url to ensure it has the correct format
     if model_param:
@@ -882,10 +906,10 @@ def miniapp():
         else:
             model_url = model_param
     else:
-        # If we have a UUID but no model_param constructed, use UUID directly
+        # If we have a UUID but no model_param constructed, use UUID directly with correct extension
         if uuid_param:
-            # Search for the latest model with filename containing the UUID
-            model_url = f"{BASE_URL}/models/{uuid_param}/model.glb"
+            # Use the file extension we determined earlier
+            model_url = f"{BASE_URL}/models/{uuid_param}/model{file_extension}"
         else:
             model_url = ""
         
@@ -1084,59 +1108,91 @@ def miniapp():
             if (modelUrl) {{
                 console.log('Loading model from URL:', modelUrl);
                 
-                // Determine which loader to use based on file extension
-                const fileExtension = modelUrl.split('.').pop().toLowerCase();
+                // Determine file extension from URL or parameters
+                const urlParams = new URLSearchParams(window.location.search);
+                const extParam = urlParams.get('ext');
+                let fileExtension;
                 
-                // Function to handle successful model load
-                const onModelLoad = (object) => {{
-                    scene.add(object);
-                    
-                    // Center and scale model
-                    const box = new THREE.Box3().setFromObject(object);
-                    const center = box.getCenter(new THREE.Vector3());
-                    const size = box.getSize(new THREE.Vector3());
-                    
-                    object.position.x = -center.x;
-                    object.position.y = -center.y;
-                    object.position.z = -center.z;
-                    
-                    // Adjust camera
-                    const maxDim = Math.max(size.x, size.y, size.z);
-                    const fov = camera.fov * (Math.PI / 180);
-                    const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-                    
-                    camera.position.z = cameraDistance * 1.5;
-                    camera.updateProjectionMatrix();
-                    
-                    scene.add(object);
-                }};
-                
-                // Progress callback for both loaders
-                const onProgress = (xhr) => {{
-                    const percent = xhr.loaded / xhr.total * 100;
-                    if (xhr.total > 0) {{
-                        showDebug('Loading: ' + Math.round(percent) + '%');
-                    }}
-                }};
-                
-                // Error callback for both loaders
-                const onError = (error) => {{
-                    console.error('Error loading model:', error);
-                    errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                    errorDiv.style.display = 'block';
-                    
-                    const modelIdFromUrl = modelUrl.split('/').filter(p => p).pop() || 'unknown';
-                    showDebug('Error loading model: ' + error.message + '\\nURL: ' + modelUrl + '\\nTry accessing /model-info/' + modelIdFromUrl);
-                }};
+                if (extParam && extParam.startsWith('.')) {{
+                    // Use extension from URL parameter (without the dot)
+                    fileExtension = extParam.substring(1).toLowerCase();
+                    showDebug('Using file extension from parameter: ' + fileExtension);
+                }} else {{
+                    // Extract from model URL
+                    fileExtension = modelUrl.split('.').pop().toLowerCase();
+                    showDebug('Extracted file extension from URL: ' + fileExtension);
+                }}
                 
                 if (fileExtension === 'fbx') {{
                     // Use FBXLoader for FBX files
+                    showDebug('Using FBXLoader for FBX file');
                     const loader = new THREE.FBXLoader();
-                    loader.load(modelUrl, onModelLoad, onProgress, onError);
+                    loader.load(
+                        modelUrl,
+                        (object) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            camera.position.z = maxDim * 2;
+                            
+                            scene.add(object);
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            console.error('Error loading model:', error);
+                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                            errorDiv.style.display = 'block';
+                            showDebug('Error: ' + error.message);
+                        }}
+                    );
                 }} else {{
                     // Use GLTFLoader for GLB/GLTF files (default)
+                    showDebug('Using GLTFLoader for ' + fileExtension + ' file');
                     const loader = new THREE.GLTFLoader();
-                    loader.load(modelUrl, (gltf) => onModelLoad(gltf.scene), onProgress, onError);
+                    loader.load(
+                        modelUrl,
+                        (gltf) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(gltf.scene);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            gltf.scene.position.x = -center.x;
+                            gltf.scene.position.y = -center.y;
+                            gltf.scene.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            camera.position.z = maxDim * 2;
+                            
+                            scene.add(gltf.scene);
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            console.error('Error loading model:', error);
+                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                            errorDiv.style.display = 'block';
+                            showDebug('Error: ' + error.message);
+                        }}
+                    );
                 }}
             }} else {{
                 errorDiv.textContent = 'No model loaded. Send a 3D model to the Telegram bot (@AxisCoreBot) to view it here.';
@@ -1249,12 +1305,31 @@ def save_model_to_storage(file_data):
             
         # Generate a unique ID for the model
         model_id = str(uuid.uuid4())
-        filename = file_data.get('filename', file_data.get('name', 'model.glb'))
+        
+        # Get the original filename and preserve its extension
+        original_filename = file_data.get('filename', file_data.get('name', ''))
+        
+        # If no filename provided or invalid, determine extension from mime_type or use default
+        if not original_filename or '.' not in original_filename:
+            # Try to get extension from mime type
+            mime_type = file_data.get('mime_type', '').lower()
+            if 'fbx' in mime_type:
+                filename = f"model.fbx"
+            else:
+                # Default to GLB if no better information
+                filename = f"model.glb"
+        else:
+            # Use the original filename
+            filename = original_filename
+            
         print(f"📌 Saving model with ID: {model_id}, filename: {filename}")
+        
+        # Extract file extension for later use
+        file_extension = os.path.splitext(filename)[1].lower()
         
         # Check size of content
         content_size = file_data.get('size', len(file_data['content']))
-        print(f"📊 Content size: {content_size} bytes")
+        print(f"📊 Content size: {content_size} bytes, File type: {file_extension}")
         
         # Begin a transaction
         cursor.execute("BEGIN")
