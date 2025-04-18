@@ -489,14 +489,14 @@ def serve_model(model_id, filename):
         found_model = False
         
         # STEP 1: Check models table using the URL
-        cursor.execute("SELECT id, model_url, content FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
+        cursor.execute("SELECT id, model_url FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
         url_result = cursor.fetchone()
         
         if url_result:
             found_model = True
             model_db_id = url_result[0]
             model_url = url_result[1]
-            content = url_result[2]
+            content = None  # Don't assume content column exists
             print(f"✅ Found model via URL pattern: DB ID={model_db_id}, URL={model_url}")
             
             # Try to extract UUID from model_url if we didn't get it already
@@ -506,8 +506,8 @@ def serve_model(model_id, filename):
                     extracted_uuid = uuid_match.group(1)
                     print(f"📋 Extracted UUID from model_url: {extracted_uuid}")
         
-        # STEP 2: If content is not found but we have a UUID, check large_model_content
-        if (not content or not content.strip()) and extracted_uuid:
+        # STEP 2: If we have a UUID, check large_model_content
+        if extracted_uuid:
             print(f"🔍 Checking large_model_content table with UUID: {extracted_uuid}")
             cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (extracted_uuid,))
             large_result = cursor.fetchone()
@@ -515,6 +515,10 @@ def serve_model(model_id, filename):
             if large_result and large_result[0]:
                 content = large_result[0]
                 print(f"✅ Found content in large_model_content table for UUID: {extracted_uuid}")
+            else:
+                print(f"⚠️ No content found in large_model_content table for UUID: {extracted_uuid}")
+        else:
+            print(f"⚠️ No UUID could be extracted from the request")
         
         # STEP 3: If still no content, check large_model_content with the filename
         if not content and not extracted_uuid:
@@ -533,10 +537,10 @@ def serve_model(model_id, filename):
                     break
         
         # If we still don't have content, report a 404
-        if not content or not content.strip():
+        if not content:
             error_msg = "Model content not available"
             if found_model:
-                error_msg = "Model found but content is empty"
+                error_msg = "Model found but content is not available in the database"
             print(f"❌ {error_msg}")
             return jsonify({
                 "error": error_msg,
