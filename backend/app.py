@@ -216,27 +216,15 @@ def webhook():
                         print(f"Generated direct miniapp URL: {direct_miniapp_url}")
                         print(f"Generated model direct URL: {model_direct_url}")
                         
-                        # Send message with multiple options
+                        # Send message with options
                         response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
                         
-                        # Send inline buttons with all options
+                        # Create a simpler keyboard with just the Browser option
                         keyboard = {
                             'inline_keyboard': [
                                 [
                                     {
-                                        'text': 'Open in Axiscore (Telegram)',
-                                        'url': miniapp_url
-                                    }
-                                ],
-                                [
-                                    {
-                                        'text': 'Open in Axiscore (Direct)',
-                                        'url': direct_miniapp_url
-                                    }
-                                ],
-                                [
-                                    {
-                                        'text': 'Open in Browser',
+                                        'text': '🌐 Open in Browser',
                                         'url': model_direct_url
                                     }
                                 ]
@@ -252,30 +240,26 @@ def webhook():
                         }
                         requests.post(url, json=payload)
                         
-                        # Also send a WebApp button which uses a different approach
-                        try:
-                            webapp_button = {
-                                'inline_keyboard': [
-                                    [
-                                        {
-                                            'text': '📱 Open in WebApp (Recommended)',
-                                            'web_app': {
-                                                'url': f"{BASE_URL}/miniapp?uuid={model_uuid}"
-                                            }
+                        # Also send a WebApp button which is the recommended option
+                        webapp_button = {
+                            'inline_keyboard': [
+                                [
+                                    {
+                                        'text': '📱 Open in Axiscore (Recommended)',
+                                        'web_app': {
+                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}"
                                         }
-                                    ]
+                                    }
                                 ]
-                            }
-                            
-                            webapp_payload = {
-                                'chat_id': chat_id,
-                                'text': "For the most reliable experience, use this WebApp button:",
-                                'reply_markup': webapp_button
-                            }
-                            requests.post(url, json=webapp_payload)
-                        except Exception as e:
-                            print(f"Error sending WebApp button: {e}")
-                            # Continue even if this fails
+                            ]
+                        }
+                        
+                        webapp_payload = {
+                            'chat_id': chat_id,
+                            'text': "For the best experience, use this button:",
+                            'reply_markup': webapp_button
+                        }
+                        requests.post(url, json=webapp_payload)
                         
                         return jsonify({"status": "ok"}), 200
                     else:
