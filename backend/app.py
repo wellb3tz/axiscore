@@ -194,10 +194,15 @@ def webhook():
                         # Direct web URL for browser access
                         direct_url = f"{request.url_root}miniapp?model={model_param}"
                         
+                        # Extract UUID from model_url for a cleaner parameter
+                        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                        uuid_match = re.search(uuid_pattern, model_url)
+                        model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                        
                         # Use Telegram's t.me format with web app
                         # The format should be: https://t.me/BOT_USERNAME/app
                         # Where "app" should match your Mini App short_name in BotFather
-                        miniapp_url = f"https://t.me/{bot_username}/app?startapp=model__{model_param}"
+                        miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
                         
                         # For debugging, log the URL
                         print(f"Generated Mini App URL: {miniapp_url}")
@@ -583,9 +588,43 @@ def serve_model(model_id, filename):
 def miniapp():
     """Serve the MiniApp React frontend."""
     # Log the request for debugging
-    model_param = request.args.get('model')
+    model_param = request.args.get('model', '')
+    uuid_param = request.args.get('uuid', '')
+    
+    # If we have a UUID directly (from Telegram), use it to construct model URL
+    if uuid_param and not model_param:
+        print(f"Received UUID parameter: {uuid_param}")
+        # Search for a model with this UUID
+        if ensure_db_connection():
+            try:
+                cursor.execute("SELECT model_url FROM models WHERE model_url LIKE %s", (f"%{uuid_param}%",))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    model_param = result[0]
+                    print(f"Found model URL from UUID: {model_param}")
+                else:
+                    print(f"No model found for UUID: {uuid_param}")
+            except Exception as e:
+                print(f"Error finding model for UUID: {e}")
+    
+    # Clean up the model_url to ensure it has the correct format
     if model_param:
-        print(f"MiniApp requested with model: {model_param}")
+        # If it's just a model ID, format it properly
+        if model_param.startswith('/models/'):
+            model_url = f"{BASE_URL}{model_param}"
+        elif not model_param.startswith('http'):
+            model_url = f"{BASE_URL}/models/{model_param}"
+        else:
+            model_url = model_param
+    else:
+        # If we have a UUID but no model_param constructed, use UUID directly
+        if uuid_param:
+            # Search for the latest model with filename containing the UUID
+            model_url = f"{BASE_URL}/models/{uuid_param}/model.glb"
+        else:
+            model_url = ""
+        
+    print(f"Rendering miniapp with model URL: {model_url}")
     
     # Try different possible paths for the frontend file
     possible_paths = [
@@ -652,6 +691,7 @@ def miniapp():
                 display: none;
             }}
         </style>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
     </head>
     <body>
         <div id="viewer"></div>
@@ -661,8 +701,28 @@ def miniapp():
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
         <script>
-            const modelUrl = '{js_model_url}';
+            // Initialize Telegram WebApp
+            const webApp = window.Telegram?.WebApp;
+            let modelUrl = '{js_model_url}';
             const debugInfo = document.getElementById('debug-info');
+            
+            // Handle Telegram startapp parameter if available
+            if (webApp) {{
+                const startParam = webApp.initDataUnsafe?.start_param;
+                if (startParam && (modelUrl === '' || startParam.includes('-'))) {{
+                    console.log('Using start parameter from Telegram:', startParam);
+                    // If it looks like a UUID, append it to the URL
+                    if (startParam.includes('-')) {{
+                        const uuid = startParam;
+                        const currentUrl = new URL(window.location.href);
+                        currentUrl.searchParams.set('uuid', uuid);
+                        window.location.href = currentUrl.toString();
+                    }}
+                }}
+                // Tell Telegram we're ready
+                webApp.ready();
+                webApp.expand();
+            }}
             
             // Show debugging info
             function showDebug(text) {{
