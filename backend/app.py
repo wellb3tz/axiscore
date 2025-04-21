@@ -321,6 +321,86 @@ def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, te
     </html>
     """
 
+# Error handling utility functions
+
+def log_error(error, context=""):
+    """Standardized error logging function"""
+    import traceback
+    error_type = type(error).__name__
+    error_msg = str(error)
+    error_trace = traceback.format_exc()
+    
+    # Always log to console
+    print(f"❌ ERROR [{error_type}] {context}: {error_msg}")
+    if error_trace:
+        print(f"Stack trace:\n{error_trace}")
+    
+    return {
+        "type": error_type,
+        "message": error_msg,
+        "trace": error_trace,
+        "context": context
+    }
+
+def api_error(error, status_code=500, context=""):
+    """Standardized API error response generator"""
+    error_details = log_error(error, context)
+    
+    # Only include stack trace in development environment
+    if os.getenv('FLASK_ENV') != 'development':
+        error_details.pop('trace', None)
+    
+    return jsonify({
+        "error": error_details['type'],
+        "message": error_details['message'],
+        "context": context,
+        "status": "error",
+        "path": request.path,
+        "method": request.method
+    }), status_code
+
+def db_transaction(func):
+    """
+    Decorator for database transactions that handles connection errors,
+    commits on success, and rolls back on exception
+    """
+    def wrapper(*args, **kwargs):
+        if not ensure_db_connection():
+            return jsonify({"error": "Database unavailable", "status": "error"}), 503
+        
+        try:
+            # Reset any previous transaction state
+            conn.rollback()
+            
+            # Execute the function
+            result = func(*args, **kwargs)
+            
+            # Commit if no exception occurred
+            conn.commit()
+            return result
+        except psycopg2.Error as db_error:
+            # Rollback on database errors
+            try:
+                conn.rollback()
+            except:
+                pass
+            
+            # Log and return standardized error response
+            return api_error(db_error, 500, f"Database error in {func.__name__}")
+        except Exception as e:
+            # Rollback on any other exception
+            try:
+                conn.rollback()
+            except:
+                pass
+            
+            # Log and return standardized error response
+            return api_error(e, 500, f"Error in {func.__name__}")
+    
+    # Preserve the function's metadata
+    wrapper.__name__ = func.__name__
+    return wrapper
+
 # Extract host from DATABASE_URL to resolve to IPv4 address
 if DATABASE_URL:
     host_match = re.search(r'@([^:]+):', DATABASE_URL)
@@ -608,62 +688,59 @@ def view_model():
 
 @app.route('/models', methods=['GET'])
 @jwt_required()
+@db_transaction
 def get_models():
     telegram_id = get_jwt_identity()
     
-    # Ensure database connection
-    if not ensure_db_connection():
-        return jsonify({"error": "Database connection unavailable"}), 503
+    # The database connection is already ensured by the db_transaction decorator
+    cursor.execute("SELECT id, model_name, model_url, created_at FROM models WHERE telegram_id = %s", (telegram_id,))
+    models = cursor.fetchall()
     
-    try:
-        cursor.execute("SELECT id, model_name, model_url, created_at FROM models WHERE telegram_id = %s", (telegram_id,))
-        models = cursor.fetchall()
-        
-        model_list = []
-        for model in models:
-            model_list.append({
-                "id": model[0],
-                "name": model[1],
-                "url": model[2],
-                "created_at": model[3].isoformat() if model[3] else None
-            })
-        
-        return jsonify(models=model_list), 200
-    except Exception as e:
-        print(f"Database error in get_models: {e}")
-        return jsonify({"error": "Database error occurred"}), 500
+    model_list = []
+    for model in models:
+        model_list.append({
+            "id": model[0],
+            "name": model[1],
+            "url": model[2],
+            "created_at": model[3].isoformat() if model[3] else None
+        })
+    
+    return jsonify({
+        "models": model_list, 
+        "status": "success",
+        "count": len(model_list)
+    }), 200
 
 @app.route('/models', methods=['POST'])
 @jwt_required()
+@db_transaction
 def add_model():
     telegram_id = get_jwt_identity()
     
-    if not request.json or not 'model_url' in request.json:
-        return jsonify({"msg": "Missing model URL"}), 400
+    if not request.json or 'model_url' not in request.json:
+        return jsonify({
+            "error": "MissingParameter",
+            "message": "Missing model URL", 
+            "status": "error"
+        }), 400
     
     model_url = request.json['model_url']
     model_name = request.json.get('model_name', os.path.basename(urllib.parse.urlparse(model_url).path))
     
-    # Ensure database connection
-    if not ensure_db_connection():
-        return jsonify({"error": "Database connection unavailable"}), 503
+    # The database connection is already ensured by the db_transaction decorator
+    cursor.execute(
+        "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
+        (telegram_id, model_name, model_url)
+    )
+    model_id = cursor.fetchone()[0]
     
-    try:
-        cursor.execute(
-            "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
-            (telegram_id, model_name, model_url)
-        )
-        model_id = cursor.fetchone()[0]
-        conn.commit()
-        
-        return jsonify({
-            "id": model_id,
-            "name": model_name,
-            "url": model_url
-        }), 201
-    except Exception as e:
-        print(f"Database error in add_model: {e}")
-        return jsonify({"error": "Database error occurred"}), 500
+    # Successful response
+    return jsonify({
+        "id": model_id,
+        "name": model_name,
+        "url": model_url,
+        "status": "success"
+    }), 201
 
 @app.route('/favicon.ico')
 def favicon():
@@ -679,7 +756,11 @@ def serve_model(model_id, filename):
         # Ensure database connection
         if not ensure_db_connection():
             print("❌ Database connection unavailable")
-            return jsonify({"error": "Database connection unavailable"}), 500
+            return jsonify({
+                "error": "DatabaseUnavailable",
+                "message": "Database connection unavailable",
+                "status": "error"
+            }), 503
         
         # Reset any failed transaction state
         try:
@@ -689,13 +770,8 @@ def serve_model(model_id, filename):
         
         # Extract the UUID from the URL if needed
         # Sometimes model_id is the UUID, sometimes it's in the URL
-        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-        uuid_match = re.search(uuid_pattern, model_id)
-        
-        # If model_id itself contains a UUID, use that
-        extracted_uuid = None
-        if uuid_match:
-            extracted_uuid = uuid_match.group(1)
+        extracted_uuid = extract_uuid_from_text(model_id)
+        if extracted_uuid:
             print(f"📋 Extracted UUID from model_id: {extracted_uuid}")
         
         content = None
@@ -714,9 +790,8 @@ def serve_model(model_id, filename):
             
             # Try to extract UUID from model_url if we didn't get it already
             if not extracted_uuid:
-                uuid_match = re.search(uuid_pattern, model_url)
-                if uuid_match:
-                    extracted_uuid = uuid_match.group(1)
+                extracted_uuid = extract_uuid_from_text(model_url)
+                if extracted_uuid:
                     print(f"📋 Extracted UUID from model_url: {extracted_uuid}")
         
         # STEP 2: If we have a UUID, check large_model_content
@@ -756,9 +831,11 @@ def serve_model(model_id, filename):
                 error_msg = "Model found but content is not available in the database"
             print(f"❌ {error_msg}")
             return jsonify({
-                "error": error_msg,
+                "error": "ModelNotFound",
+                "message": error_msg,
                 "model_id": model_id,
-                "extracted_uuid": extracted_uuid
+                "extracted_uuid": extracted_uuid,
+                "status": "error"
             }), 404
         
         # Convert base64 back to binary
@@ -767,17 +844,15 @@ def serve_model(model_id, filename):
             content_size = len(decoded_content)
             print(f"✅ Successfully decoded content, size: {content_size} bytes")
         except Exception as e:
-            print(f"❌ Failed to decode base64 content: {e}")
-            return jsonify({"error": "Failed to decode model content", "details": str(e)}), 500
+            error_details = log_error(e, f"Failed to decode base64 content for model {model_id}")
+            return jsonify({
+                "error": error_details['type'], 
+                "message": error_details['message'], 
+                "status": "error"
+            }), 500
         
         # Determine content type based on filename
-        content_type = 'application/octet-stream'  # Default
-        if filename.lower().endswith('.glb'):
-            content_type = 'model/gltf-binary'
-        elif filename.lower().endswith('.gltf'):
-            content_type = 'model/gltf+json'
-        elif filename.lower().endswith('.fbx'):
-            content_type = 'application/octet-stream'  # FBX doesn't have an official MIME type
+        content_type = get_content_type_from_extension(filename)
         
         # Set CORS headers to allow loading from any origin
         response = make_response(decoded_content)
@@ -788,10 +863,22 @@ def serve_model(model_id, filename):
         return response
         
     except Exception as e:
-        print(f"❌ Error serving model {model_id}/{filename}: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return jsonify({"error": "Server error", "details": str(e)}), 500
+        # Log the error using our utility function
+        error_details = log_error(e, f"Error serving model {model_id}/{filename}")
+        
+        # Always rollback on error
+        try:
+            conn.rollback()
+        except:
+            pass
+            
+        return jsonify({
+            "error": error_details['type'],
+            "message": error_details['message'],
+            "status": "error",
+            "model_id": model_id,
+            "filename": filename
+        }), 500
 
 @app.route('/viewer')
 def model_viewer():
@@ -1770,15 +1857,14 @@ def find_model_by_name(filename):
 @app.errorhandler(500)
 def handle_500(e):
     """Handle internal server errors and log details."""
-    import traceback
-    error_traceback = traceback.format_exc()
-    print(f"Internal Server Error: {str(e)}")
-    print(error_traceback)
+    error_details = log_error(e, f"Internal Server Error at {request.path}")
+    
     return jsonify({
-        "error": "Internal Server Error",
-        "message": str(e),
+        "error": "InternalServerError",
+        "message": error_details['message'],
         "path": request.path,
-        "method": request.method
+        "method": request.method,
+        "status": "error"
     }), 500
 
 def ensure_db_connection():
