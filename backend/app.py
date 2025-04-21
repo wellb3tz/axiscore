@@ -61,6 +61,8 @@ def get_content_type_from_extension(file_extension):
         return 'model/gltf+json'
     elif file_extension.lower().endswith('.fbx'):
         return 'application/octet-stream'  # FBX doesn't have an official MIME type
+    elif file_extension.lower().endswith('.obj'):
+        return 'text/plain'  # OBJ files are plain text
     return 'application/octet-stream'  # Default
 
 def extract_uuid_from_text(text):
@@ -138,7 +140,13 @@ def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, te
     
     # Normalize the extension by removing the dot if present and converting to lowercase
     extension_type = file_extension.lower().replace('.', '')
-    loader_type = "FBXLoader" if extension_type == "fbx" else "GLTFLoader"
+    
+    # Determine appropriate loader based on file extension
+    loader_type = "GLTFLoader"  # Default
+    if extension_type == "fbx":
+        loader_type = "FBXLoader"
+    elif extension_type == "obj":
+        loader_type = "OBJLoader"
     
     return f"""
     <!DOCTYPE html>
@@ -163,6 +171,8 @@ def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, te
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/OBJLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/MTLLoader.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
         <script>
             // Initialize debugging
@@ -250,6 +260,42 @@ def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, te
                             
                             scene.add(object);
                             showDebug('FBX model loaded successfully');
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            showError('Error loading model: ' + error.message);
+                        }}
+                    );
+                }} else if (fileExtension === 'obj') {{
+                    // Use OBJLoader for OBJ files
+                    const loader = new THREE.OBJLoader();
+                    loader.load(
+                        modelUrl,
+                        (object) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const fov = camera.fov * (Math.PI / 180);
+                            const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                            
+                            camera.position.z = cameraDistance * 1.5;
+                            camera.updateProjectionMatrix();
+                            
+                            scene.add(object);
+                            showDebug('OBJ model loaded successfully');
                         }},
                         (xhr) => {{
                             const percent = xhr.loaded / xhr.total * 100;
@@ -526,7 +572,7 @@ def webhook():
         mime_type = document.get('mime_type', '')
         
         # Check if it's a 3D model file
-        if file_name.lower().endswith(('.glb', '.gltf', '.fbx')) or 'model' in mime_type.lower():
+        if file_name.lower().endswith(('.glb', '.gltf', '.fbx', '.obj')) or 'model' in mime_type.lower():
             # Download file from Telegram
             try:
                 print(f"Processing file: {file_name}, ID: {file_id}")
@@ -633,11 +679,11 @@ def webhook():
     else:
         # Check for specific commands
         if text.lower() == '/start':
-            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, or .fbx) and I'll generate an interactive preview for you."
+            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, .fbx, or .obj) and I'll generate an interactive preview for you."
         elif text.lower() == '/help':
             response_text = """
 Axiscore 3D Model Viewer Help:
-• Send a 3D model file (.glb, .gltf, or .fbx) directly to this chat
+• Send a 3D model file (.glb, .gltf, .fbx, or .obj) directly to this chat
 • I'll create an interactive viewer link
 • Click "Open in Axiscore" to view and interact with your model
 • Use pinch/scroll to zoom, drag to rotate
@@ -645,7 +691,7 @@ Axiscore 3D Model Viewer Help:
             """
         else:
             # Generic response for other messages
-            response_text = f"Send me a 3D model file (.glb, .gltf, or .fbx) to view it in Axiscore. You said: {text}"
+            response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, or .obj) to view it in Axiscore. You said: {text}"
         
         send_message(chat_id, response_text)
     
@@ -970,9 +1016,9 @@ def model_viewer():
                 errorMessage.textContent = 'No model URL provided.';
             }}
 
-            // Handle 3D file formats not supported by model-viewer (like FBX)
+            // Handle 3D file formats not supported by model-viewer (like FBX or OBJ)
             const fileExtension = '{file_extension}'.toLowerCase();
-            if (fileExtension.replace('.', '') === 'fbx') {{
+            if (fileExtension.replace('.', '') === 'fbx' || fileExtension.replace('.', '') === 'obj') {{
                 // Hide model-viewer and create three.js container
                 modelViewer.style.display = 'none';
                 const threeContainer = document.createElement('div');
@@ -1001,42 +1047,84 @@ def model_viewer():
                 const controls = new THREE.OrbitControls(camera, renderer.domElement);
                 controls.enableDamping = true;
                 
-                // Load FBX model
-                const loader = new THREE.FBXLoader();
-                loader.load(
-                    '{model_url}',
-                    (object) => {{
-                        loadingMessage.style.display = 'none';
-                        
-                        // Center model
-                        const box = new THREE.Box3().setFromObject(object);
-                        const center = box.getCenter(new THREE.Vector3());
-                        const size = box.getSize(new THREE.Vector3());
-                        
-                        object.position.x = -center.x;
-                        object.position.y = -center.y;
-                        object.position.z = -center.z;
-                        
-                        // Adjust camera
-                        const maxDim = Math.max(size.x, size.y, size.z);
-                        const fov = camera.fov * (Math.PI / 180);
-                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-                        
-                        camera.position.z = cameraDistance * 1.5;
-                        camera.updateProjectionMatrix();
-                        
-                        scene.add(object);
-                    }},
-                    (xhr) => {{
-                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
-                    }},
-                    (error) => {{
-                        loadingMessage.style.display = 'none';
-                        errorMessage.style.display = 'block';
-                        errorMessage.textContent = 'Error loading FBX model: ' + error.message;
-                        debug('Error: ' + error.message);
-                    }}
-                );
+                // Determine which loader to use
+                const extension = fileExtension.replace('.', '');
+                
+                if (extension === 'fbx') {{
+                    // Load FBX model
+                    const loader = new THREE.FBXLoader();
+                    loader.load(
+                        '{model_url}',
+                        (object) => {{
+                            loadingMessage.style.display = 'none';
+                            
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const fov = camera.fov * (Math.PI / 180);
+                            const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                            
+                            camera.position.z = cameraDistance * 1.5;
+                            camera.updateProjectionMatrix();
+                            
+                            scene.add(object);
+                        }},
+                        (xhr) => {{
+                            console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                        }},
+                        (error) => {{
+                            loadingMessage.style.display = 'none';
+                            errorMessage.style.display = 'block';
+                            errorMessage.textContent = 'Error loading FBX model: ' + error.message;
+                            debug('Error: ' + error.message);
+                        }}
+                    );
+                }} else if (extension === 'obj') {{
+                    // Load OBJ model
+                    const loader = new THREE.OBJLoader();
+                    loader.load(
+                        '{model_url}',
+                        (object) => {{
+                            loadingMessage.style.display = 'none';
+                            
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const fov = camera.fov * (Math.PI / 180);
+                            const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                            
+                            camera.position.z = cameraDistance * 1.5;
+                            camera.updateProjectionMatrix();
+                            
+                            scene.add(object);
+                        }},
+                        (xhr) => {{
+                            console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+                        }},
+                        (error) => {{
+                            loadingMessage.style.display = 'none';
+                            errorMessage.style.display = 'block';
+                            errorMessage.textContent = 'Error loading OBJ model: ' + error.message;
+                            debug('Error: ' + error.message);
+                        }}
+                    );
+                }}
                 
                 // Animation loop
                 function animate() {{
@@ -1155,6 +1243,8 @@ def miniapp():
         <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/OBJLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/MTLLoader.js"></script>
         <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
         <script>
             // Initialize Telegram WebApp
@@ -1315,6 +1405,41 @@ def miniapp():
                             showDebug('Error: ' + error.message);
                         }}
                     );
+                }} else if (extensionWithoutDot === 'obj') {{
+                    // Use OBJLoader for OBJ files
+                    showDebug('Using OBJLoader for OBJ file');
+                    const loader = new THREE.OBJLoader();
+                    loader.load(
+                        modelUrl,
+                        (object) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            camera.position.z = maxDim * 2;
+                            
+                            scene.add(object);
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            console.error('Error loading model:', error);
+                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
+                            errorDiv.style.display = 'block';
+                            showDebug('Error: ' + error.message);
+                        }}
+                    );
                 }} else {{
                     // Use GLTFLoader for GLB/GLTF files (default)
                     showDebug('Using GLTFLoader for ' + extension + ' file');
@@ -1380,6 +1505,7 @@ def help_page():
     <ul>
         <li>glTF/GLB (.glb, .gltf)</li>
         <li>Filmbox (.fbx)</li>
+        <li>Wavefront (.obj)</li>
     </ul>
     <p>To use this service, send your 3D model file to the Telegram bot: @AxisCoreBot</p>
     """
@@ -1389,7 +1515,7 @@ def index():
     return jsonify({
         "status": "online",
         "message": "3D Model Viewer API is running",
-        "supported_formats": ["glb", "gltf", "fbx"]
+        "supported_formats": ["glb", "gltf", "fbx", "obj"]
     })
 
 def download_telegram_file(file_id):
