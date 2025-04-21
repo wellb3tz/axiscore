@@ -136,6 +136,7 @@ def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, te
     """
     telegram_webapp_script = '<script src="https://telegram.org/js/telegram-web-app.js"></script>' if telegram_webapp_js else ''
     
+    # Normalize the extension by removing the dot if present and converting to lowercase
     extension_type = file_extension.lower().replace('.', '')
     loader_type = "FBXLoader" if extension_type == "fbx" else "GLTFLoader"
     
@@ -884,7 +885,7 @@ def model_viewer():
 
             // Handle 3D file formats not supported by model-viewer (like FBX)
             const fileExtension = '{file_extension}'.toLowerCase();
-            if (fileExtension === '.fbx') {{
+            if (fileExtension.replace('.', '') === 'fbx') {{
                 // Hide model-viewer and create three.js container
                 modelViewer.style.display = 'none';
                 const threeContainer = document.createElement('div');
@@ -1189,7 +1190,10 @@ def miniapp():
                 const extension = '{file_extension}'.toLowerCase();
                 showDebug('Using file extension: ' + extension);
                 
-                if (extension === '.fbx') {{
+                // Remove the dot from the extension before comparison
+                const extensionWithoutDot = extension.replace('.', '');
+                
+                if (extensionWithoutDot === 'fbx') {{
                     // Use FBXLoader for FBX files
                     showDebug('Using FBXLoader for FBX file');
                     const loader = new THREE.FBXLoader();
