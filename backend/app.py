@@ -38,6 +38,288 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # Base URL for public-facing URLs (use environment variable or default to localhost)
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
 
+# Utility functions for 3D viewer implementations to reduce code duplication
+
+def get_file_extension(model_url, ext_param=None):
+    """Determine file extension from URL or parameters"""
+    if ext_param and ext_param.startswith('.'):
+        # Use extension from URL parameter (without the dot)
+        return ext_param
+    else:
+        # Extract from model URL
+        file_extension = os.path.splitext(model_url)[1].lower()
+        if not file_extension and '.' in model_url:
+            # Try the last part after the dot
+            file_extension = f".{model_url.split('.')[-1].lower()}"
+        return file_extension if file_extension else ".glb"  # Default to .glb
+
+def get_content_type_from_extension(file_extension):
+    """Get MIME content type based on file extension"""
+    if file_extension.lower().endswith('.glb'):
+        return 'model/gltf-binary'
+    elif file_extension.lower().endswith('.gltf'):
+        return 'model/gltf+json'
+    elif file_extension.lower().endswith('.fbx'):
+        return 'application/octet-stream'  # FBX doesn't have an official MIME type
+    return 'application/octet-stream'  # Default
+
+def extract_uuid_from_text(text):
+    """Extract UUID from text if present"""
+    if not text:
+        return None
+    uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+    uuid_match = re.search(uuid_pattern, text)
+    return uuid_match.group(1) if uuid_match else None
+
+def get_telegram_parameters(request, telegram_webapp=None):
+    """
+    Extract model parameters from Telegram WebApp or URL parameters.
+    Returns a tuple of (model_url, uuid, file_extension)
+    """
+    model_param = request.args.get('model', '')
+    uuid_param = request.args.get('uuid', '')
+    ext_param = request.args.get('ext', '')
+    
+    # Try to get UUID from Telegram WebApp
+    start_param = None
+    start_command = None
+    
+    if telegram_webapp:
+        # Extract from Telegram WebApp
+        try:
+            start_param = telegram_webapp.get('initDataUnsafe', {}).get('start_param')
+            start_command = telegram_webapp.get('initDataUnsafe', {}).get('start_command')
+        except:
+            pass
+            
+    # If we have a direct UUID from a parameter, use that
+    extracted_uuid = uuid_param
+    
+    # If no direct UUID, check start_param
+    if not extracted_uuid and start_param:
+        extracted_uuid = extract_uuid_from_text(start_param)
+    
+    # If still no UUID, check start_command
+    if not extracted_uuid and start_command:
+        extracted_uuid = extract_uuid_from_text(start_command)
+    
+    # If still no UUID, check if model_param contains a UUID
+    if not extracted_uuid and model_param:
+        extracted_uuid = extract_uuid_from_text(model_param)
+    
+    # Get file extension
+    file_extension = get_file_extension(model_param, ext_param)
+    
+    # Construct model URL based on parameters
+    if model_param:
+        if model_param.startswith('/models/'):
+            model_url = f"{BASE_URL}{model_param}"
+        elif not model_param.startswith('http'):
+            model_url = f"{BASE_URL}/models/{model_param}"
+        else:
+            model_url = model_param
+    elif extracted_uuid:
+        model_url = f"{BASE_URL}/models/{extracted_uuid}/model{file_extension}"
+    else:
+        model_url = ""
+    
+    return model_url, extracted_uuid, file_extension
+
+def generate_threejs_viewer_html(model_url, file_extension, debug_mode=False, telegram_webapp_js=False):
+    """
+    Generates HTML with Three.js viewer for 3D models.
+    Parameters:
+    - model_url: URL to the 3D model
+    - file_extension: File extension to determine loader type (.glb, .gltf, .fbx)
+    - debug_mode: Whether to show debug info
+    - telegram_webapp_js: Whether to include Telegram WebApp JS
+    """
+    telegram_webapp_script = '<script src="https://telegram.org/js/telegram-web-app.js"></script>' if telegram_webapp_js else ''
+    
+    extension_type = file_extension.lower().replace('.', '')
+    loader_type = "FBXLoader" if extension_type == "fbx" else "GLTFLoader"
+    
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>3D Model Viewer</title>
+        {telegram_webapp_script}
+        <style>
+            body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; }}
+            #model-container {{ width: 100%; height: 100%; }}
+            .error {{ color: red; padding: 20px; position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,0.8); border-radius: 5px; display: none; }}
+            .debug-info {{ position: absolute; bottom: 10px; left: 10px; background: rgba(255,255,255,0.8); padding: 10px; border-radius: 5px; font-size: 12px; max-width: 80%; display: {('block' if debug_mode else 'none')}; }}
+        </style>
+    </head>
+    <body>
+        <div id="model-container"></div>
+        <div id="error" class="error"></div>
+        <div id="debug-info" class="debug-info"></div>
+        <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
+        <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
+        <script>
+            // Initialize debugging
+            const debugInfo = document.getElementById('debug-info');
+            const errorDiv = document.getElementById('error');
+            
+            function showDebug(text) {{
+                if (debugInfo) {{
+                    debugInfo.textContent += text + '\\n';
+                    debugInfo.style.display = 'block';
+                }}
+                console.log(text);
+            }}
+            
+            function showError(text) {{
+                if (errorDiv) {{
+                    errorDiv.textContent = text;
+                    errorDiv.style.display = 'block';
+                }}
+                console.error(text);
+            }}
+            
+            // Telegram WebApp initialization if included
+            const webApp = window.Telegram?.WebApp;
+            if (webApp) {{
+                webApp.ready();
+                webApp.expand();
+                showDebug('Telegram WebApp initialized');
+            }}
+            
+            // ThreeJS setup
+            const container = document.getElementById('model-container');
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            
+            const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.25;
+            
+            // Load 3D model
+            const modelUrl = '{model_url}';
+            showDebug('Model URL: ' + modelUrl);
+            
+            if (modelUrl) {{
+                // Determine which loader to use
+                const fileExtension = '{extension_type}';
+                showDebug('File type: ' + fileExtension);
+                
+                if (fileExtension === 'fbx') {{
+                    // Use FBXLoader for FBX files
+                    const loader = new THREE.FBXLoader();
+                    loader.load(
+                        modelUrl,
+                        (object) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(object);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            object.position.x = -center.x;
+                            object.position.y = -center.y;
+                            object.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const fov = camera.fov * (Math.PI / 180);
+                            const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                            
+                            camera.position.z = cameraDistance * 1.5;
+                            camera.updateProjectionMatrix();
+                            
+                            scene.add(object);
+                            showDebug('FBX model loaded successfully');
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            showError('Error loading model: ' + error.message);
+                        }}
+                    );
+                }} else {{
+                    // Use GLTFLoader for GLB/GLTF files (default)
+                    const loader = new THREE.GLTFLoader();
+                    loader.load(
+                        modelUrl,
+                        (gltf) => {{
+                            // Center model
+                            const box = new THREE.Box3().setFromObject(gltf.scene);
+                            const center = box.getCenter(new THREE.Vector3());
+                            const size = box.getSize(new THREE.Vector3());
+                            
+                            gltf.scene.position.x = -center.x;
+                            gltf.scene.position.y = -center.y;
+                            gltf.scene.position.z = -center.z;
+                            
+                            // Adjust camera
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const fov = camera.fov * (Math.PI / 180);
+                            const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+                            
+                            camera.position.z = cameraDistance * 1.5;
+                            camera.updateProjectionMatrix();
+                            
+                            scene.add(gltf.scene);
+                            showDebug('GLTF/GLB model loaded successfully');
+                        }},
+                        (xhr) => {{
+                            const percent = xhr.loaded / xhr.total * 100;
+                            if (xhr.total > 0) {{
+                                showDebug('Loading: ' + Math.round(percent) + '%');
+                            }}
+                        }},
+                        (error) => {{
+                            showError('Error loading model: ' + error.message);
+                        }}
+                    );
+                }}
+            }} else {{
+                showError('No model URL provided');
+            }}
+            
+            // Animation and resize handling
+            window.addEventListener('resize', () => {{
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }});
+            
+            function animate() {{
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }}
+            
+            animate();
+        </script>
+    </body>
+    </html>
+    """
+
 # Extract host from DATABASE_URL to resolve to IPv4 address
 if DATABASE_URL:
     host_match = re.search(r'@([^:]+):', DATABASE_URL)
@@ -316,139 +598,12 @@ def view_model():
     if not model_url:
         return "No model URL provided", 400
     
-    # Return HTML page with embedded model viewer
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>3D Model Viewer</title>
-        <style>
-            body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
-            #model-container {{ width: 100%; height: 100%; }}
-        </style>
-    </head>
-    <body>
-        <div id="model-container"></div>
-        <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
-        <script>
-            const container = document.getElementById('model-container');
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0xf0f0f0);
-            
-            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.z = 5;
-            
-            const renderer = new THREE.WebGLRenderer({{ antialias: true }});
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            container.appendChild(renderer.domElement);
-            
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight);
-            
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-            directionalLight.position.set(1, 1, 1);
-            scene.add(directionalLight);
-            
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.25;
-            
-            // Determine which loader to use based on file extension
-            const fileExtension = '{model_url}'.split('.').pop().toLowerCase();
-            
-            if (fileExtension === 'fbx') {{
-                // Use FBXLoader for FBX files
-                const loader = new THREE.FBXLoader();
-                loader.load(
-                    '{model_url}',
-                    (object) => {{
-                        // Center model
-                        const box = new THREE.Box3().setFromObject(object);
-                        const center = box.getCenter(new THREE.Vector3());
-                        const size = box.getSize(new THREE.Vector3());
-                        
-                        object.position.x = -center.x;
-                        object.position.y = -center.y;
-                        object.position.z = -center.z;
-                        
-                        // Adjust camera
-                        const maxDim = Math.max(size.x, size.y, size.z);
-                        const fov = camera.fov * (Math.PI / 180);
-                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-                        
-                        camera.position.z = cameraDistance * 1.5;
-                        camera.updateProjectionMatrix();
-                        
-                        scene.add(object);
-                    }},
-                    (xhr) => {{
-                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
-                    }},
-                    (error) => {{
-                        console.error('Error loading model:', error);
-                        document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
-                    }}
-                );
-            }} else {{
-                // Use GLTFLoader for GLB/GLTF files (default)
-                const loader = new THREE.GLTFLoader();
-                loader.load(
-                    '{model_url}',
-                    (gltf) => {{
-                        // Center model
-                        const box = new THREE.Box3().setFromObject(gltf.scene);
-                        const center = box.getCenter(new THREE.Vector3());
-                        const size = box.getSize(new THREE.Vector3());
-                        
-                        gltf.scene.position.x = -center.x;
-                        gltf.scene.position.y = -center.y;
-                        gltf.scene.position.z = -center.z;
-                        
-                        // Adjust camera
-                        const maxDim = Math.max(size.x, size.y, size.z);
-                        const fov = camera.fov * (Math.PI / 180);
-                        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-                        
-                        camera.position.z = cameraDistance * 1.5;
-                        camera.updateProjectionMatrix();
-                        
-                        scene.add(gltf.scene);
-                    }},
-                    (xhr) => {{
-                        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
-                    }},
-                    (error) => {{
-                        console.error('Error loading model:', error);
-                        document.body.innerHTML = '<div style="color: red; padding: 20px;">Error loading model: ' + error.message + '</div>';
-                    }}
-                );
-            }}
-            
-            window.addEventListener('resize', () => {{
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-            }});
-            
-            function animate() {{
-                requestAnimationFrame(animate);
-                controls.update();
-                renderer.render(scene, camera);
-            }}
-            
-            animate();
-        </script>
-    </body>
-    </html>
-    """
+    # Get file extension for the model
+    file_extension = get_file_extension(model_url)
+    extension_type = file_extension.lower().replace('.', '')
     
-    return html
+    # Return HTML page with embedded model viewer using our utility function
+    return generate_threejs_viewer_html(model_url, file_extension)
 
 @app.route('/models', methods=['GET'])
 @jwt_required()
@@ -641,19 +796,10 @@ def serve_model(model_id, filename):
 def model_viewer():
     model_param = request.args.get('model', '')
     
-    # Construct model URL based on the model parameter
-    model_url = ""
-    if model_param.startswith('http'):
-        # If it's already a URL, use it directly
-        model_url = model_param
-    elif model_param.startswith('/uploads/'):
-        # If it's a path to an uploaded file
-        model_url = f"{BASE_URL}{model_param}"
-    else:
-        # Assume it's a model ID from the database
-        model_url = f"{BASE_URL}/model/{model_param}"
+    # Get model URL using our utility function
+    model_url, _, file_extension = get_telegram_parameters(request)
     
-    # HTML for the model viewer page
+    # Use more advanced viewer with Telegram WebApp integration
     html = f'''
     <!DOCTYPE html>
     <html lang="en">
@@ -663,10 +809,6 @@ def model_viewer():
         <title>3D Model Viewer</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/libs/fflate.min.js"></script>
         <style>
             body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; }}
             .container {{ position: relative; width: 100%; height: 100%; }}
@@ -711,10 +853,6 @@ def model_viewer():
                 console.log(message);
             }}
             
-            // Uncomment to display debug info
-            // debug('Model URL: {model_url}');
-            // debug('Start param: ' + startParam);
-            
             // Set up model-viewer events
             modelViewer.addEventListener('load', () => {{
                 loadingMessage.style.display = 'none';
@@ -745,8 +883,8 @@ def model_viewer():
             }}
 
             // Handle 3D file formats not supported by model-viewer (like FBX)
-            const fileExtension = '{model_url}'.split('.').pop().toLowerCase();
-            if (fileExtension === 'fbx') {{
+            const fileExtension = '{file_extension}'.toLowerCase();
+            if (fileExtension === '.fbx') {{
                 // Hide model-viewer and create three.js container
                 modelViewer.style.display = 'none';
                 const threeContainer = document.createElement('div');
@@ -840,19 +978,11 @@ def model_viewer():
 @app.route('/miniapp/')
 def miniapp():
     """Serve the MiniApp React frontend."""
-    # Log the request for debugging
-    model_param = request.args.get('model', '')
-    uuid_param = request.args.get('uuid', '')
-    ext_param = request.args.get('ext', '')
+    # Get parameters and model URL using our utility function
+    model_url, uuid_param, file_extension = get_telegram_parameters(request)
     
-    # If ext param is provided, use it
-    if ext_param and ext_param.startswith('.'):
-        file_extension = ext_param
-    else:
-        file_extension = ".glb"  # Default
-        
-    # If we have a UUID directly (from Telegram), use it to construct model URL
-    if uuid_param and not model_param:
+    # If we have a UUID directly (from Telegram), search for the model in database
+    if uuid_param and not model_url:
         print(f"Received UUID parameter: {uuid_param}")
         # Search for a model with this UUID
         if ensure_db_connection():
@@ -861,45 +991,19 @@ def miniapp():
                 cursor.execute("SELECT model_url, model_name FROM models WHERE model_url LIKE %s", (f"%{uuid_param}%",))
                 result = cursor.fetchone()
                 if result and result[0]:
-                    model_param = result[0]
+                    model_url = result[0]
                     model_name = result[1] if len(result) > 1 else ""
-                    print(f"Found model URL from UUID: {model_param}")
+                    print(f"Found model URL from UUID: {model_url}")
                     
                     # Store the file extension for possible use later
-                    if not ext_param:  # Only override if not explicitly provided
-                        if model_name and '.' in model_name:
-                            file_extension = os.path.splitext(model_name)[1].lower()
-                        else:
-                            # Try to extract extension from the URL
-                            url_parts = model_param.split('.')
-                            if len(url_parts) > 1:
-                                file_extension = f".{url_parts[-1].lower()}"
-                            else:
-                                file_extension = ".glb"  # Default fallback
+                    if '.' in model_name:
+                        file_extension = os.path.splitext(model_name)[1].lower()
                 else:
                     print(f"No model found for UUID: {uuid_param}")
             except Exception as e:
                 print(f"Error finding model for UUID: {e}")
     
     print(f"Using file extension: {file_extension}")
-    
-    # Clean up the model_url to ensure it has the correct format
-    if model_param:
-        # If it's just a model ID, format it properly
-        if model_param.startswith('/models/'):
-            model_url = f"{BASE_URL}{model_param}"
-        elif not model_param.startswith('http'):
-            model_url = f"{BASE_URL}/models/{model_param}"
-        else:
-            model_url = model_param
-    else:
-        # If we have a UUID but no model_param constructed, use UUID directly with correct extension
-        if uuid_param:
-            # Use the file extension we determined earlier
-            model_url = f"{BASE_URL}/models/{uuid_param}/model{file_extension}"
-        else:
-            model_url = ""
-        
     print(f"Rendering miniapp with model URL: {model_url}")
     
     # Try different possible paths for the frontend file
@@ -916,27 +1020,13 @@ def miniapp():
         except:
             continue
     
-    # If no file is found, return a simple HTML with error message and model viewer
-    model_param = request.args.get('model', '')
-    
-    # Clean up the model_url to ensure it has the correct format
-    if model_param:
-        # If it's just a model ID, format it properly
-        if model_param.startswith('/models/'):
-            model_url = f"{BASE_URL}{model_param}"
-        elif not model_param.startswith('http'):
-            model_url = f"{BASE_URL}/models/{model_param}"
-        else:
-            model_url = model_param
-    else:
-        model_url = ""
-        
-    print(f"Rendering miniapp with model URL: {model_url}")
-    
+    # If no file is found, return a simple HTML with model viewer
     # Prepare a JavaScript-friendly version of the model URL
     js_model_url = model_url.replace("'", "\\'")
-        
-    return f"""
+    
+    # For miniapp, we need a more specialized viewer with Telegram WebApp integration
+    # This version handles both model-viewer component and ThreeJS fallback
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -1016,7 +1106,7 @@ def miniapp():
                     // If modelUrl is empty or start_param looks like a UUID, use start_param
                     if (modelUrl === '' || startParam.includes('-')) {{
                         const uuid = startParam;
-                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
                         showDebug('Using model from Telegram parameter:\\n' + modelUrl);
                     }}
                 }} else if (startCommand) {{
@@ -1027,7 +1117,7 @@ def miniapp():
                     const uuidMatch = startCommand.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
                     if (uuidMatch) {{
                         const uuid = uuidMatch[1];
-                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
                         showDebug('Using model from Telegram start command:\\n' + modelUrl);
                     }}
                 }} else {{
@@ -1051,7 +1141,7 @@ def miniapp():
                     
                     if (uuidParam) {{
                         console.log('Using UUID from URL parameters:', uuidParam);
-                        modelUrl = `${{baseUrl}}/models/${{uuidParam}}/model.glb`;
+                        modelUrl = `${{baseUrl}}/models/${{uuidParam}}/model{file_extension}`;
                         showDebug('Using model from URL parameter:\\n' + modelUrl);
                     }} else {{
                         // Try to extract UUID from the URL path
@@ -1061,7 +1151,7 @@ def miniapp():
                         if (uuidMatch) {{
                             const uuid = uuidMatch[1];
                             console.log('Extracted UUID from URL path:', uuid);
-                            modelUrl = `${{baseUrl}}/models/${{uuid}}/model.glb`;
+                            modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
                             showDebug('Using model from URL path:\\n' + modelUrl);
                         }}
                     }}
@@ -1095,22 +1185,11 @@ def miniapp():
             if (modelUrl) {{
                 console.log('Loading model from URL:', modelUrl);
                 
-                // Determine file extension from URL or parameters
-                const urlParams = new URLSearchParams(window.location.search);
-                const extParam = urlParams.get('ext');
-                let fileExtension;
+                // Extract file extension for loader selection
+                const extension = '{file_extension}'.toLowerCase();
+                showDebug('Using file extension: ' + extension);
                 
-                if (extParam && extParam.startsWith('.')) {{
-                    // Use extension from URL parameter (without the dot)
-                    fileExtension = extParam.substring(1).toLowerCase();
-                    showDebug('Using file extension from parameter: ' + fileExtension);
-                }} else {{
-                    // Extract from model URL
-                    fileExtension = modelUrl.split('.').pop().toLowerCase();
-                    showDebug('Extracted file extension from URL: ' + fileExtension);
-                }}
-                
-                if (fileExtension === 'fbx') {{
+                if (extension === '.fbx') {{
                     // Use FBXLoader for FBX files
                     showDebug('Using FBXLoader for FBX file');
                     const loader = new THREE.FBXLoader();
@@ -1147,7 +1226,7 @@ def miniapp():
                     );
                 }} else {{
                     // Use GLTFLoader for GLB/GLTF files (default)
-                    showDebug('Using GLTFLoader for ' + fileExtension + ' file');
+                    showDebug('Using GLTFLoader for ' + extension + ' file');
                     const loader = new THREE.GLTFLoader();
                     loader.load(
                         modelUrl,
@@ -1198,6 +1277,8 @@ def miniapp():
     </body>
     </html>
     """
+    
+    return html
 
 @app.route('/help')
 def help_page():
