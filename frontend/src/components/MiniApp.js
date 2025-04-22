@@ -6,7 +6,6 @@ const MiniApp = () => {
   const { telegramApp, user, isReady, theme } = useTelegram();
   const [modelUrl, setModelUrl] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showExamples, setShowExamples] = useState(false);
   
   // Get model URL from query parameters if available
   useEffect(() => {
@@ -47,16 +46,8 @@ const MiniApp = () => {
       // Expand the app to full height
       telegramApp.expand();
       
-      // Set the main button to show example models
-      if (!modelUrl) {
-        telegramApp.MainButton.setText('Example Models');
-        telegramApp.MainButton.show();
-        telegramApp.MainButton.onClick(() => {
-          setShowExamples(!showExamples);
-        });
-      } else {
-        telegramApp.MainButton.hide();
-      }
+      // Hide the MainButton - we're removing Example Models functionality
+      telegramApp.MainButton.hide();
     }
     
     return () => {
@@ -66,7 +57,7 @@ const MiniApp = () => {
         telegramApp.MainButton.hide();
       }
     };
-  }, [telegramApp, modelUrl, showExamples]);
+  }, [telegramApp, modelUrl]);
   
   if (!isReady) {
     return (
@@ -135,58 +126,23 @@ const MiniApp = () => {
             </div>
           )}
           
-          {/* Examples panel - floats above the 3D view */}
-          {showExamples && (
-            <div className="examples-panel" style={{
-              position: 'absolute',
-              top: '20px',
-              left: '20px',
-              right: '20px',
-              background: 'rgba(255, 255, 255, 0.9)',
-              borderRadius: '12px',
-              padding: '15px',
-              zIndex: 100,
-              boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ margin: 0 }}>Example Models</h3>
-                <button 
-                  onClick={() => setShowExamples(false)}
-                  style={{ 
-                    background: 'none', 
-                    border: 'none', 
-                    fontSize: '20px', 
-                    cursor: 'pointer',
-                    color: theme.isDark ? '#fff' : '#333'
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-              
-              <div className="model-examples">
-                <div className="tg-card" onClick={() => {
-                  setModelUrl('https://threejs.org/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf');
-                  setShowExamples(false);
-                }}>
-                  <div className="model-title">Damaged Helmet</div>
-                  <div className="tg-hint">Click to view</div>
-                </div>
-                <div className="tg-card" onClick={() => {
-                  setModelUrl('https://threejs.org/examples/models/gltf/Duck/glTF/Duck.gltf');
-                  setShowExamples(false);
-                }}>
-                  <div className="model-title">Duck</div>
-                  <div className="tg-hint">Click to view</div>
-                </div>
-                <div className="tg-card" onClick={() => {
-                  setModelUrl('https://threejs.org/examples/models/gltf/Parrot.glb');
-                  setShowExamples(false);
-                }}>
-                  <div className="model-title">Parrot</div>
-                  <div className="tg-hint">Click to view</div>
-                </div>
-              </div>
+          {/* Simple empty state message - when no model is loaded */}
+          {!modelUrl && (
+            <div 
+              className="empty-state-message"
+              style={{
+                position: 'absolute',
+                bottom: '20px',
+                left: '20px',
+                right: '20px',
+                background: 'rgba(255, 255, 255, 0.9)',
+                borderRadius: '12px',
+                padding: '15px',
+                zIndex: 100,
+                textAlign: 'center'
+              }}
+            >
+              <p>Send a 3D model file (.glb, .gltf, .fbx, or .obj) to the Telegram bot to view it here.</p>
             </div>
           )}
         </div>

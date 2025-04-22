@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader';
 
 const ModelViewerScreen = ({ modelUrl }) => {
   const mountRef = useRef(null);
@@ -62,58 +64,90 @@ const ModelViewerScreen = ({ modelUrl }) => {
       
       setLoading(false);
     } else {
-      // Load the 3D model
-      const loader = new GLTFLoader();
+      // Determine file extension
+      const fileExtension = modelUrl.split('.').pop().toLowerCase();
       
       setLoading(true);
       setError(null);
       
-      loader.load(
-        modelUrl,
-        (gltf) => {
-          // Center model
-          const box = new THREE.Box3().setFromObject(gltf.scene);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-          
-          // Reset model position to center
-          gltf.scene.position.x = -center.x;
-          gltf.scene.position.y = -center.y;
-          gltf.scene.position.z = -center.z;
-          
-          // Adjust camera
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const fov = camera.fov * (Math.PI / 180);
-          const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-          
-          camera.position.z = cameraDistance * 1.5;
-          camera.updateProjectionMatrix();
-          
-          scene.add(gltf.scene);
-          setLoading(false);
-        },
-        (xhr) => {
-          // Loading progress
-          console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
-        },
-        (error) => {
-          console.error('Error loading model:', error);
-          
-          // Try to provide more helpful error messages
-          let errorMessage = error.message || 'Failed to load model';
-          
-          if (errorMessage.includes('NetworkError') || errorMessage.includes('CORS')) {
-            errorMessage = 'Network error: The model could not be loaded due to CORS or server issues. Please try again later.';
-          } else if (errorMessage.includes('404')) {
-            errorMessage = 'Model not found: The 3D model file could not be found on the server.';
-          } else if (errorMessage.includes('500')) {
-            errorMessage = 'Server error: There was a problem processing the 3D model on our servers.';
-          }
-          
-          setError(errorMessage);
-          setLoading(false);
+      // Helper function to center model and adjust camera
+      const setupModel = (object) => {
+        // Center model
+        const box = new THREE.Box3().setFromObject(object);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        
+        // Reset model position to center
+        object.position.x = -center.x;
+        object.position.y = -center.y;
+        object.position.z = -center.z;
+        
+        // Adjust camera
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const fov = camera.fov * (Math.PI / 180);
+        const cameraDistance = maxDim / (2 * Math.tan(fov / 2));
+        
+        camera.position.z = cameraDistance * 1.5;
+        camera.updateProjectionMatrix();
+        
+        scene.add(object);
+        setLoading(false);
+      };
+      
+      // Progress and error handlers for all loaders
+      const onProgress = (xhr) => {
+        console.log((xhr.loaded / xhr.total) * 100 + '% loaded');
+      };
+      
+      const onError = (error) => {
+        console.error('Error loading model:', error);
+        
+        // Try to provide more helpful error messages
+        let errorMessage = error.message || 'Failed to load model';
+        
+        if (errorMessage.includes('NetworkError') || errorMessage.includes('CORS')) {
+          errorMessage = 'Network error: The model could not be loaded due to CORS or server issues. Please try again later.';
+        } else if (errorMessage.includes('404')) {
+          errorMessage = 'Model not found: The 3D model file could not be found on the server.';
+        } else if (errorMessage.includes('500')) {
+          errorMessage = 'Server error: There was a problem processing the 3D model on our servers.';
         }
-      );
+        
+        setError(errorMessage);
+        setLoading(false);
+      };
+      
+      // Load the model based on file extension
+      if (fileExtension === 'fbx') {
+        // Use FBXLoader for FBX files
+        const loader = new FBXLoader();
+        loader.load(
+          modelUrl,
+          setupModel,
+          onProgress,
+          onError
+        );
+      } else if (fileExtension === 'obj') {
+        // Use OBJLoader for OBJ files
+        const loader = new OBJLoader();
+        loader.load(
+          modelUrl,
+          setupModel,
+          onProgress,
+          onError
+        );
+      } else {
+        // Use GLTFLoader for GLB/GLTF files (default)
+        const loader = new GLTFLoader();
+        loader.load(
+          modelUrl,
+          (gltf) => {
+            setupModel(gltf.scene);
+          },
+          onProgress,
+          onError
+        );
+      }
     }
     
     // Handle window resize
