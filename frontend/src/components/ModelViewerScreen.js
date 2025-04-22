@@ -194,20 +194,6 @@ const ModelViewerScreen = ({ modelUrl }) => {
           {error}
         </div>
       )}
-      {!modelUrl && !loading && (
-        <div className="empty-environment-message" style={{
-          position: 'absolute',
-          bottom: '20px',
-          left: '20px',
-          color: '#333',
-          background: 'rgba(255, 255, 255, 0.7)',
-          padding: '10px',
-          borderRadius: '5px',
-          fontSize: '14px'
-        }}>
-          No model loaded. Send a 3D model to the bot to view it here.
-        </div>
-      )}
     </div>
   );
 };
