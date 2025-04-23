@@ -45,6 +45,13 @@ from db_utils import (
     DatabaseManager,
     create_transaction_decorator
 )
+# Import archive utilities
+import archive_utils
+from archive_utils import (
+    extract_archive,
+    find_3d_model_files,
+    cleanup_extraction
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -117,8 +124,230 @@ def webhook():
         file_id = document.get('file_id')
         mime_type = document.get('mime_type', '')
         
+        # Check if it's an archive file
+        if file_name.lower().endswith(('.rar', '.zip', '.7z')):
+            # Process archive file
+            try:
+                print(f"Processing archive: {file_name}, ID: {file_id}")
+                
+                # Ensure database connection before proceeding
+                if not db.ensure_connection():
+                    print("Database connection unavailable, cannot process archive")
+                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
+                    return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
+                
+                # Send a message to inform the user we're processing the archive
+                send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
+                
+                # Download file from Telegram
+                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN)
+                
+                if not file_data:
+                    print("Failed to download archive from Telegram")
+                    send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                    return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                
+                print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
+                
+                # Save the archive to a temporary file
+                temp_file_path = os.path.join(UPLOAD_FOLDER, f"temp_archive_{uuid.uuid4()}{os.path.splitext(file_name)[1]}")
+                try:
+                    # Decode base64 content
+                    archive_content = base64.b64decode(file_data['content'])
+                    
+                    # Write to temporary file
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(archive_content)
+                    
+                    print(f"Archive saved to temporary file: {temp_file_path}")
+                    
+                    # Extract the archive
+                    extract_result = extract_archive(temp_file_path)
+                    
+                    if not extract_result['success']:
+                        raise Exception(f"Failed to extract archive: {extract_result['error']}")
+                    
+                    # Find 3D model files in the extracted directory
+                    extract_path = extract_result['extract_path']
+                    files_found = extract_result['files']
+                    
+                    print(f"Extracted {len(files_found)} files from archive")
+                    
+                    # Find 3D model files
+                    model_files = find_3d_model_files(files_found)
+                    
+                    if not model_files:
+                        print("No 3D model files found in archive")
+                        send_message(
+                            chat_id, 
+                            "No 3D model files (.glb, .gltf, .fbx, .obj) found in your archive. Please upload a valid archive containing 3D models.", 
+                            TELEGRAM_BOT_TOKEN
+                        )
+                        # Clean up
+                        cleanup_extraction(extract_path)
+                        os.remove(temp_file_path)
+                        return jsonify({"status": "error", "msg": "No 3D model files found"}), 400
+                    
+                    print(f"Found {len(model_files)} 3D model files in archive:")
+                    for model in model_files:
+                        print(f"- {model['filename']} ({model['extension']})")
+                    
+                    # If multiple model files are found, ask the user which one to use
+                    if len(model_files) > 1:
+                        # Inform user about the found models
+                        model_list = "\n".join([f"{i+1}. {m['filename']}" for i, m in enumerate(model_files)])
+                        message_text = f"Found {len(model_files)} 3D models in your archive:\n\n{model_list}\n\nProcessing all models..."
+                        send_message(chat_id, message_text, TELEGRAM_BOT_TOKEN)
+                    
+                    # Process each model file
+                    processed_models = []
+                    for model_file in model_files:
+                        model_path = os.path.join(extract_path, model_file['path'])
+                        model_filename = model_file['filename']
+                        model_ext = model_file['extension']
+                        
+                        print(f"Processing model: {model_filename}")
+                        
+                        # Read the model file
+                        with open(model_path, 'rb') as f:
+                            model_content = f.read()
+                        
+                        # Convert to base64 for storage
+                        model_base64 = base64.b64encode(model_content).decode('utf-8')
+                        
+                        # Create file data structure similar to what download_telegram_file returns
+                        model_data = {
+                            'filename': model_filename,
+                            'content': model_base64,
+                            'size': len(model_content),
+                            'mime_type': f'model/{model_ext[1:]}',  # .glb -> model/glb
+                            'telegram_id': chat_id
+                        }
+                        
+                        # Save to storage and get URL
+                        model_url = db.save_model(model_data, BASE_URL)
+                        
+                        if model_url:
+                            processed_models.append({
+                                'filename': model_filename,
+                                'url': model_url,
+                                'extension': model_ext
+                            })
+                            print(f"Model {model_filename} saved successfully, URL: {model_url}")
+                        else:
+                            print(f"Failed to save model {model_filename} to storage")
+                    
+                    # Clean up
+                    cleanup_extraction(extract_path)
+                    os.remove(temp_file_path)
+                    
+                    if not processed_models:
+                        print("Failed to process any models from the archive")
+                        send_message(chat_id, "Failed to process any models from your archive. Please try again.", TELEGRAM_BOT_TOKEN)
+                        return jsonify({"status": "error", "msg": "Failed to process models"}), 500
+                    
+                    # Send response to user with all processed models
+                    if len(processed_models) == 1:
+                        # Single model
+                        model = processed_models[0]
+                        model_url = model['url']
+                        model_filename = model['filename']
+                        model_ext = model['extension']
+                        
+                        # Get the bot username for creating the Mini App URL
+                        bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
+                        bot_username = bot_info.get('username', '') if bot_info else ''
+                        
+                        # Extract UUID from model_url for a cleaner parameter
+                        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                        uuid_match = re.search(uuid_pattern, model_url)
+                        model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                        
+                        # Response message
+                        response_text = f"Extracted and processed model: {model_filename}\n\nUse one of the buttons below to view it:"
+                        
+                        # Create a combined keyboard with both options
+                        keyboard = {
+                            'inline_keyboard': [
+                                [
+                                    {
+                                        'text': '📱 Open in Axiscore (Recommended)',
+                                        'web_app': {
+                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={model_ext}"
+                                        }
+                                    }
+                                ],
+                                [
+                                    {
+                                        'text': '🌐 Open in Browser',
+                                        'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
+                                    }
+                                ]
+                            ]
+                        }
+                        
+                        # Send the message with combined keyboard
+                        send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
+                    else:
+                        # Multiple models
+                        response_text = f"Extracted and processed {len(processed_models)} models from your archive:\n\n"
+                        
+                        # Send a message for each model
+                        send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+                        
+                        for model in processed_models:
+                            model_url = model['url']
+                            model_filename = model['filename']
+                            model_ext = model['extension']
+                            
+                            # Extract UUID from model_url
+                            uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                            uuid_match = re.search(uuid_pattern, model_url)
+                            model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                            
+                            # Model-specific message
+                            model_text = f"Model: {model_filename}"
+                            
+                            # Keyboard for this model
+                            keyboard = {
+                                'inline_keyboard': [
+                                    [
+                                        {
+                                            'text': '📱 Open in Axiscore',
+                                            'web_app': {
+                                                'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={model_ext}"
+                                            }
+                                        }
+                                    ],
+                                    [
+                                        {
+                                            'text': '🌐 Open in Browser',
+                                            'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
+                                        }
+                                    ]
+                                ]
+                            }
+                            
+                            # Send message for this model
+                            send_webapp_button(chat_id, model_text, keyboard, TELEGRAM_BOT_TOKEN)
+                    
+                    return jsonify({"status": "ok"}), 200
+                    
+                except Exception as e:
+                    print(f"Error processing archive: {e}")
+                    # Clean up any temporary files
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                    
+                    send_message(chat_id, f"Error processing your archive: {str(e)[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                    return jsonify({"status": "error", "msg": str(e)}), 500
+            except Exception as e:
+                print(f"Error processing archive: {e}")
+                send_message(chat_id, "Failed to process your archive. Please try again.", TELEGRAM_BOT_TOKEN)
+                return jsonify({"status": "error", "msg": str(e)}), 500
+                
         # Check if it's a 3D model file
-        if file_name.lower().endswith(('.glb', '.gltf', '.fbx', '.obj')) or 'model' in mime_type.lower():
+        elif file_name.lower().endswith(('.glb', '.gltf', '.fbx', '.obj')) or 'model' in mime_type.lower():
             # Download file from Telegram
             try:
                 print(f"Processing file: {file_name}, ID: {file_id}")
@@ -220,19 +449,20 @@ def webhook():
     else:
         # Check for specific commands
         if text.lower() == '/start':
-            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, .fbx, or .obj) and I'll generate an interactive preview for you."
+            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, .fbx, or .obj) or an archive (.rar, .zip, .7z) containing 3D models, and I'll generate an interactive preview for you."
         elif text.lower() == '/help':
             response_text = """
 Axiscore 3D Model Viewer Help:
 • Send a 3D model file (.glb, .gltf, .fbx, or .obj) directly to this chat
-• I'll create an interactive viewer link
+• Or upload an archive (.rar, .zip, .7z) containing 3D models
+• For archives, I'll extract all 3D models inside
+• I'll create an interactive viewer link for each model
 • Click "Open in Axiscore" to view and interact with your model
 • Use pinch/scroll to zoom, drag to rotate
-• You can download the original model from the viewer
             """
         else:
             # Generic response for other messages
-            response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, or .obj) to view it in Axiscore. You said: {text}"
+            response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
         
         send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
     
@@ -532,7 +762,18 @@ def help_page():
             {"name": "Filmbox", "extensions": [".fbx"]},
             {"name": "Wavefront", "extensions": [".obj"]}
         ],
-        "usage": "Send your 3D model file to the Telegram bot: @AxisCoreBot",
+        "supported_archives": [
+            {"name": "RAR", "extensions": [".rar"]},
+            {"name": "ZIP", "extensions": [".zip"]},
+            {"name": "7-Zip", "extensions": [".7z"]}
+        ],
+        "features": [
+            "Direct 3D model file uploads",
+            "Archive extraction with automatic model detection",
+            "Multiple model processing from a single archive",
+            "Interactive 3D viewer with mobile support"
+        ],
+        "usage": "Send your 3D model file or archive to the Telegram bot: @AxisCoreBot",
         "status": "success"
     })
 
@@ -541,7 +782,14 @@ def index():
     return jsonify({
         "status": "online",
         "message": "3D Model Viewer API is running",
-        "supported_formats": ["glb", "gltf", "fbx", "obj"]
+        "supported_formats": ["glb", "gltf", "fbx", "obj"],
+        "supported_archives": ["rar", "zip", "7z"],
+        "features": {
+            "model_viewing": True,
+            "archive_extraction": True,
+            "telegram_integration": True,
+            "multi_model_support": True
+        }
     })
 
 def save_model_to_storage(file_data):
