@@ -33,7 +33,7 @@ const ModelViewer = () => {
   const controlsRef = useRef(null);
   const modelRef = useRef(null);
 
-  // Step 1: Fetch model data from the API
+  // Step 1: Fetch model data from the API or use direct params
   useEffect(() => {
     const fetchModelData = async () => {
       try {
@@ -41,7 +41,31 @@ const ModelViewer = () => {
         const params = new URLSearchParams(location.search);
         const modelParam = params.get('model');
         const uuidParam = params.get('uuid');
-        const extParam = params.get('ext');
+        const extParam = params.get('ext') || '.glb'; // Default to .glb if not specified
+        
+        // Check if we're on GitHub Pages or another static host
+        const isGitHubPages = window.location.hostname.includes('github.io');
+        const isStaticHost = isGitHubPages || window.location.hostname.includes('netlify') || 
+                             window.location.hostname.includes('vercel');
+        
+        addDebugInfo(`Detected environment: ${isGitHubPages ? 'GitHub Pages' : 
+                     (isStaticHost ? 'Static hosting' : 'Normal mode')}`);
+
+        // If we're on a static host and have a direct model URL, use it directly
+        if ((isStaticHost || modelParam) && modelParam) {
+          addDebugInfo(`Using direct model URL: ${modelParam}`);
+          setModelData({
+            model_url: modelParam,
+            file_extension: extParam,
+            uuid: uuidParam || 'direct-load',
+            base_url: window.location.origin,
+            status: 'success'
+          });
+          setApiLoading(false);
+          return;
+        }
+
+        // Normal API flow
         let apiEndpoint = '/viewer'; // Default to viewer endpoint
 
         if (location.pathname.includes('miniapp')) {
@@ -311,6 +335,13 @@ const ModelViewer = () => {
           setModelError(`Failed to load 3D model: ${error.message}`);
           setModelLoading(false);
           addDebugInfo(`Error: ${error.message}`);
+          
+          // If loading fails, provide suggestions
+          addDebugInfo(`Suggestions: 
+          - Check if the model URL is accessible
+          - Ensure the model format matches the extension
+          - Try a different model format (GLB, GLTF, FBX, OBJ)
+          - Check CORS settings if loading from a different domain`);
         }
       );
     } catch (err) {
@@ -435,12 +466,23 @@ const ModelViewer = () => {
         width: '100%', 
         height: '100vh',
         display: 'flex',
+        flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
         color: 'red',
-        fontSize: '18px'
+        fontSize: '18px',
+        padding: '20px'
       }}>
-        Error: {apiError}
+        <div>Error: {apiError}</div>
+        <div style={{ 
+          marginTop: '20px',
+          fontSize: '14px',
+          color: '#666',
+          maxWidth: '600px',
+          textAlign: 'center'
+        }}>
+          To view a model, add a model URL directly in the address bar: <code>?model=https://example.com/your-model.glb</code>
+        </div>
       </div>
     );
   }
