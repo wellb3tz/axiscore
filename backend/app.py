@@ -17,7 +17,8 @@ import io
 import uuid
 from datetime import datetime
 # Import viewer utilities
-from backend.viewer_utils import (
+import viewer_utils
+from viewer_utils import (
     get_file_extension, 
     get_content_type_from_extension, 
     extract_uuid_from_text,
