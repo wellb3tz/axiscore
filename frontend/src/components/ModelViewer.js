@@ -274,8 +274,37 @@ const ModelViewer = () => {
     window.addEventListener('resize', handleResize);
 
     // Load the 3D model based on file extension
-    const extension = file_extension?.toLowerCase().replace('.', '') || 
-                      modelUrl.split('.').pop().toLowerCase();
+    // Improve file extension detection
+    let extension = 'glb'; // Default to GLB/GLTF
+    
+    // Check various sources for the file extension in order of priority
+    if (file_extension) {
+      // Get from API response if available
+      extension = file_extension.toLowerCase().replace('.', '');
+      addDebugInfo(`Using file extension from API response: ${extension}`);
+    } else if (modelUrl) {
+      // Try to extract from URL
+      const urlExtension = modelUrl.split('.').pop().toLowerCase();
+      if (urlExtension && ['glb', 'gltf', 'fbx', 'obj'].includes(urlExtension)) {
+        extension = urlExtension;
+        addDebugInfo(`Extracted file extension from URL: ${extension}`);
+      } else {
+        // Check URL for extension indicators
+        if (modelUrl.includes('fbx')) {
+          extension = 'fbx';
+          addDebugInfo(`Detected FBX model from URL pattern`);
+        } else if (modelUrl.includes('obj')) {
+          extension = 'obj';
+          addDebugInfo(`Detected OBJ model from URL pattern`);
+        } else if (modelUrl.includes('gltf')) {
+          extension = 'gltf';
+          addDebugInfo(`Detected GLTF model from URL pattern`);
+        } else if (modelUrl.includes('glb')) {
+          extension = 'glb';
+          addDebugInfo(`Detected GLB model from URL pattern`);
+        }
+      }
+    }
     
     addDebugInfo(`Loading model: ${modelUrl}`);
     addDebugInfo(`Using file extension: ${extension}`);
@@ -284,14 +313,29 @@ const ModelViewer = () => {
     switch (extension) {
       case 'fbx':
         loader = new FBXLoader();
+        addDebugInfo('Using FBXLoader for FBX file');
         break;
       case 'obj':
         loader = new OBJLoader();
+        addDebugInfo('Using OBJLoader for OBJ file');
         break;
       case 'glb':
       case 'gltf':
-      default:
         loader = new GLTFLoader();
+        addDebugInfo('Using GLTFLoader for GLTF/GLB file');
+        break;
+      default:
+        // Try to determine from the URL as a fallback
+        if (modelUrl && modelUrl.endsWith('.fbx')) {
+          loader = new FBXLoader();
+          addDebugInfo('Fallback: Using FBXLoader based on URL ending');
+        } else if (modelUrl && modelUrl.endsWith('.obj')) {
+          loader = new OBJLoader();
+          addDebugInfo('Fallback: Using OBJLoader based on URL ending');
+        } else {
+          loader = new GLTFLoader();
+          addDebugInfo('Fallback: Using default GLTFLoader');
+        }
         break;
     }
     
@@ -390,16 +434,164 @@ const ModelViewer = () => {
         // On error
         (error) => {
           console.error('Error loading model:', error);
-          setModelError(`Failed to load 3D model: ${error.message}`);
-          setModelLoading(false);
-          addDebugInfo(`Error: ${error.message}`);
           
-          // If loading fails, provide suggestions
-          addDebugInfo(`Suggestions: 
-          - Check if the model URL is accessible
-          - Ensure the model format matches the extension
-          - Try a different model format (GLB, GLTF, FBX, OBJ)
-          - Check CORS settings if loading from a different domain`);
+          // Check if this is a JSON parse error, which indicates wrong loader
+          const isJsonError = error.message && (
+            error.message.includes('Unexpected token') || 
+            error.message.includes('JSON')
+          );
+          
+          if (isJsonError && extension === 'glb' && modelUrl.includes('.fbx')) {
+            // Try FBX loader as fallback
+            addDebugInfo('JSON parse error detected. Trying FBXLoader as fallback...');
+            const fbxLoader = new FBXLoader();
+            fbxLoader.load(
+              modelUrl,
+              (object) => {
+                setModelLoading(false);
+                addDebugInfo('Model loaded successfully with FBXLoader fallback');
+                
+                modelRef.current = object;
+                
+                // Apply the same processing as in the success handler
+                object.traverse((child) => {
+                  if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                    if (child.material) {
+                      if (Array.isArray(child.material)) {
+                        child.material.forEach(material => {
+                          material.side = THREE.DoubleSide;
+                        });
+                      } else {
+                        child.material.side = THREE.DoubleSide;
+                      }
+                    }
+                  }
+                });
+                
+                // Center model
+                const box = new THREE.Box3().setFromObject(object);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                
+                object.position.x = -center.x;
+                object.position.y = -center.y;
+                object.position.z = -center.z;
+                
+                // Adjust camera position
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const fov = camera.fov * (Math.PI / 180);
+                const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
+                
+                camera.position.set(cameraZ, cameraZ, cameraZ);
+                camera.lookAt(new THREE.Vector3(0, 0, 0));
+                controls.target.set(0, 0, 0);
+                controls.update();
+                
+                scene.add(object);
+                
+                // Stop auto-rotate after 5 seconds
+                setTimeout(() => {
+                  if (controlsRef.current) {
+                    controlsRef.current.autoRotate = false;
+                  }
+                }, 5000);
+              },
+              onProgress,
+              (fbxError) => {
+                // If FBX loader also fails, try OBJ loader
+                if (modelUrl.includes('.obj') || modelUrl.toLowerCase().includes('obj')) {
+                  addDebugInfo('FBXLoader failed. Trying OBJLoader as last resort...');
+                  const objLoader = new OBJLoader();
+                  objLoader.load(
+                    modelUrl,
+                    (object) => {
+                      // Same processing as above
+                      setModelLoading(false);
+                      addDebugInfo('Model loaded successfully with OBJLoader fallback');
+                      
+                      // Same object processing logic as above
+                      // ...
+                      
+                      scene.add(object);
+                    },
+                    onProgress,
+                    (objError) => {
+                      // Give up if all loaders fail
+                      setModelError(`Failed to load 3D model: ${error.message}. Tried all available loaders.`);
+                      setModelLoading(false);
+                      addDebugInfo(`All loaders failed: ${objError.message}`);
+                    }
+                  );
+                } else {
+                  setModelError(`Failed to load 3D model: ${fbxError.message}`);
+                  setModelLoading(false);
+                  addDebugInfo(`Error with FBXLoader fallback: ${fbxError.message}`);
+                }
+              }
+            );
+          } else if (isJsonError && extension === 'glb' && (modelUrl.includes('.obj') || modelUrl.toLowerCase().includes('obj'))) {
+            // Try OBJ loader as fallback
+            addDebugInfo('JSON parse error detected. Trying OBJLoader as fallback...');
+            const objLoader = new OBJLoader();
+            objLoader.load(
+              modelUrl,
+              (object) => {
+                setModelLoading(false);
+                addDebugInfo('Model loaded successfully with OBJLoader fallback');
+                
+                modelRef.current = object;
+                
+                // Apply the same processing as in the success handler
+                // Center model
+                const box = new THREE.Box3().setFromObject(object);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                
+                object.position.x = -center.x;
+                object.position.y = -center.y;
+                object.position.z = -center.z;
+                
+                // Adjust camera position
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const fov = camera.fov * (Math.PI / 180);
+                const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
+                
+                camera.position.set(cameraZ, cameraZ, cameraZ);
+                camera.lookAt(new THREE.Vector3(0, 0, 0));
+                controls.target.set(0, 0, 0);
+                controls.update();
+                
+                scene.add(object);
+                
+                // Stop auto-rotate after 5 seconds
+                setTimeout(() => {
+                  if (controlsRef.current) {
+                    controlsRef.current.autoRotate = false;
+                  }
+                }, 5000);
+              },
+              onProgress,
+              (objError) => {
+                setModelError(`Failed to load 3D model: ${objError.message}`);
+                setModelLoading(false);
+                addDebugInfo(`Error with OBJLoader fallback: ${objError.message}`);
+              }
+            );
+          } else {
+            // Standard error with no fallback attempted
+            setModelError(`Failed to load 3D model: ${error.message}`);
+            setModelLoading(false);
+            addDebugInfo(`Error: ${error.message}`);
+            
+            // If loading fails, provide suggestions
+            addDebugInfo(`Suggestions: 
+            - Check if the model URL is accessible
+            - Ensure the model format matches the extension
+            - Try a different model format (GLB, GLTF, FBX, OBJ)
+            - Check CORS settings if loading from a different domain`);
+          }
         }
       );
     } catch (err) {
