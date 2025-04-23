@@ -1,26 +1,8 @@
 import React from 'react';
-import { BrowserRouter as Router, Switch, Route, useLocation } from 'react-router-dom';
-import ModelViewerScreen from './components/ModelViewerScreen';
-import MiniApp from './components/MiniApp';
-import { TelegramProvider } from './context/TelegramContext';
+import { BrowserRouter as Router, Switch, Route } from 'react-router-dom';
+import ModelViewer from './components/ModelViewer';
 import './styles/main.css';
 import './styles/theme.css';
-
-// Helper function to get URL parameters
-const useQuery = () => {
-  return new URLSearchParams(useLocation().search);
-};
-
-const ViewerPage = () => {
-  const query = useQuery();
-  const modelUrl = query.get('model');
-  
-  return (
-    <div className="viewer-container">
-      <ModelViewerScreen modelUrl={modelUrl} />
-    </div>
-  );
-};
 
 const HomePage = () => {
   return (
@@ -29,15 +11,6 @@ const HomePage = () => {
       <h2>3D Model Viewer for Telegram</h2>
       <p>A web application that allows users to view and interact with 3D models directly in Telegram.</p>
     </div>
-  );
-};
-
-// MiniApp route - the main Telegram Mini App entry point
-const MiniAppPage = () => {
-  return (
-    <TelegramProvider>
-      <MiniApp />
-    </TelegramProvider>
   );
 };
 
@@ -56,10 +29,11 @@ const App = () => {
     <Router basename={getBasename()}>
       <div className="App">
         <Switch>
-          <Route path="/view" exact component={ViewerPage} />
-          <Route path="/miniapp" component={MiniAppPage} />
+          <Route path="/view" exact component={ModelViewer} />
+          <Route path="/viewer" exact component={ModelViewer} />
+          <Route path="/miniapp" component={ModelViewer} />
           <Route path="/home" exact component={HomePage} />
-          <Route path="/" component={MiniAppPage} />
+          <Route path="/" component={ModelViewer} />
         </Switch>
       </div>
     </Router>

@@ -242,14 +242,23 @@ Axiscore 3D Model Viewer Help:
 def view_model():
     model_url = request.args.get('model')
     if not model_url:
-        return "No model URL provided", 400
+        return jsonify({
+            "error": "MissingParameter",
+            "message": "No model URL provided",
+            "status": "error"
+        }), 400
     
     # Get file extension for the model
     file_extension = get_file_extension(model_url)
     extension_type = file_extension.lower().replace('.', '')
     
-    # Return HTML page with embedded model viewer using our utility function
-    return generate_threejs_viewer_html(model_url, file_extension)
+    # Return model info as JSON for the frontend to render
+    return jsonify({
+        "model_url": model_url,
+        "file_extension": file_extension,
+        "extension_type": extension_type,
+        "status": "success"
+    })
 
 @app.route('/models', methods=['GET'])
 @jwt_required()
@@ -438,20 +447,23 @@ def serve_model(model_id, filename):
             "filename": filename
         }), 500
 
-@app.route('/viewer')
+@app.route('/viewer', methods=['GET'])
 def model_viewer():
-    model_param = request.args.get('model', '')
+    # Get model URL and other parameters using our utility function
+    model_url, uuid_param, file_extension = get_telegram_parameters(request)
     
-    # Get model URL using our utility function
-    model_url, _, file_extension = get_telegram_parameters(request)
-    
-    # Use more advanced viewer with Telegram WebApp integration
-    return generate_threejs_viewer_html(model_url, file_extension)
+    # Return model info as JSON for the frontend to render
+    return jsonify({
+        "model_url": model_url,
+        "uuid": uuid_param,
+        "file_extension": file_extension,
+        "status": "success"
+    })
 
-@app.route('/miniapp')
-@app.route('/miniapp/')
+@app.route('/miniapp', methods=['GET'])
+@app.route('/miniapp/', methods=['GET'])
 def miniapp():
-    """Serve the MiniApp React frontend."""
+    """Return model info for the MiniApp frontend."""
     # Get parameters and model URL using our utility function
     model_url, uuid_param, file_extension = get_telegram_parameters(request)
     
@@ -483,333 +495,29 @@ def miniapp():
     print(f"Using file extension: {file_extension}")
     print(f"Rendering miniapp with model URL: {model_url}")
     
-    # Try different possible paths for the frontend file
-    possible_paths = [
-        '../frontend/build/index.html',  # Original relative path
-        'frontend/build/index.html',     # Without leading ../
-        '/app/frontend/build/index.html' # Absolute path in container
-    ]
-    
-    for path in possible_paths:
-        try:
-            if os.path.exists(path):
-                return send_file(path)
-        except:
-            continue
-    
-    # If no file is found, return a simple HTML with model viewer
-    # Prepare a JavaScript-friendly version of the model URL
-    js_model_url = model_url.replace("'", "\\'") if model_url else ''
-    
-    # For miniapp, we need a more specialized viewer with Telegram WebApp integration
-    # This version handles both model-viewer component and ThreeJS fallback
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Axiscore 3D Viewer</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body, html {{ height: 100%; margin: 0; padding: 0; font-family: Arial, sans-serif; }}
-            #viewer {{ width: 100%; height: 100%; }}
-            .error {{ 
-                color: red; 
-                padding: 20px; 
-                position: absolute; 
-                top: 10px; 
-                left: 10px; 
-                background: rgba(255,255,255,0.8); 
-                border-radius: 5px; 
-                display: none; 
-            }}
-            .debug-info {{
-                position: absolute;
-                bottom: 10px;
-                left: 10px;
-                background: rgba(255,255,255,0.8);
-                padding: 10px;
-                border-radius: 5px;
-                font-size: 12px;
-                max-width: 80%;
-                display: none;
-            }}
-        </style>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    </head>
-    <body>
-        <div id="viewer"></div>
-        <div id="error" class="error"></div>
-        <div id="debug-info" class="debug-info"></div>
-        <script src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/FBXLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/OBJLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/loaders/MTLLoader.js"></script>
-        <script src="https://unpkg.com/three@0.132.2/examples/js/libs/fflate.min.js"></script>
-        <script>
-            // Initialize Telegram WebApp
-            const webApp = window.Telegram?.WebApp;
-            let modelUrl = '{js_model_url}';
-            const baseUrl = '{BASE_URL}';  // Define baseUrl for JavaScript
-            const debugInfo = document.getElementById('debug-info');
-            const errorDiv = document.getElementById('error');
-            
-            // Always show debug info in Telegram
-            if (webApp) {{
-                debugInfo.style.display = 'block';
-                showDebug('Debug mode enabled. Base URL: ' + baseUrl + '\\nInitial model URL: ' + modelUrl);
-            }} else {{
-                // Show debug info for browser testing
-                debugInfo.style.display = 'block';
-                showDebug('Browser mode. Base URL: ' + baseUrl + '\\nInitial model URL: ' + modelUrl);
-            }}
-            
-            // Show debugging info
-            function showDebug(text) {{
-                debugInfo.textContent = text;
-                debugInfo.style.display = 'block';
-            }}
-            
-            // Handle Telegram startapp parameter if available
-            if (webApp) {{
-                const startParam = webApp.initDataUnsafe?.start_param;
-                const startCommand = webApp.initDataUnsafe?.start_command;
-                showDebug('Telegram WebApp detected!\\nStart param: ' + (startParam || 'none') + 
-                          '\\nStart command: ' + (startCommand || 'none'));
-                
-                // Try to get UUID from start param
-                if (startParam) {{
-                    console.log('Using start parameter from Telegram:', startParam);
-                    
-                    // If modelUrl is empty or start_param looks like a UUID, use start_param
-                    if (modelUrl === '' || startParam.includes('-')) {{
-                        const uuid = startParam;
-                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
-                        showDebug('Using model from Telegram parameter:\\n' + modelUrl);
-                    }}
-                }} else if (startCommand) {{
-                    // Some versions of Telegram might pass the parameter as a start_command
-                    console.log('Using start command from Telegram:', startCommand);
-                    
-                    // Extract UUID from start command if it looks like one
-                    const uuidMatch = startCommand.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-                    if (uuidMatch) {{
-                        const uuid = uuidMatch[1];
-                        modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
-                        showDebug('Using model from Telegram start command:\\n' + modelUrl);
-                    }}
-                }} else {{
-                    // If no start param, try to extract UUID from URL
-                    const urlParams = new URLSearchParams(window.location.search);
-                    let uuidParam = urlParams.get('uuid') || urlParams.get('startapp');
-                    
-                    // Check for "start" parameter which is used in Telegram bot start commands
-                    if (!uuidParam) {{
-                        const startValue = urlParams.get('start');
-                        if (startValue) {{
-                            // Extract UUID from start value if it looks like one
-                            const uuidMatch = startValue.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-                            if (uuidMatch) {{
-                                uuidParam = uuidMatch[1];
-                            }} else {{
-                                uuidParam = startValue;
-                            }}
-                        }}
-                    }}
-                    
-                    if (uuidParam) {{
-                        console.log('Using UUID from URL parameters:', uuidParam);
-                        modelUrl = `${{baseUrl}}/models/${{uuidParam}}/model{file_extension}`;
-                        showDebug('Using model from URL parameter:\\n' + modelUrl);
-                    }} else {{
-                        // Try to extract UUID from the URL path
-                        const urlPath = window.location.pathname;
-                        const uuidMatch = urlPath.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-                        
-                        if (uuidMatch) {{
-                            const uuid = uuidMatch[1];
-                            console.log('Extracted UUID from URL path:', uuid);
-                            modelUrl = `${{baseUrl}}/models/${{uuid}}/model{file_extension}`;
-                            showDebug('Using model from URL path:\\n' + modelUrl);
-                        }}
-                    }}
-                }}
-                
-                // Tell Telegram we're ready
-                webApp.ready();
-                webApp.expand();
-            }}
-            
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0xf0f0f0);
-            
-            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.z = 5;
-            
-            const renderer = new THREE.WebGLRenderer({{ antialias: true }});
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.getElementById('viewer').appendChild(renderer.domElement);
-            
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight);
-            
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-            directionalLight.position.set(1, 1, 1);
-            scene.add(directionalLight);
-            
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            
-            if (modelUrl) {{
-                console.log('Loading model from URL:', modelUrl);
-                
-                // Extract file extension for loader selection
-                const extension = '{file_extension}'.toLowerCase();
-                showDebug('Using file extension: ' + extension);
-                
-                // Remove the dot from the extension before comparison
-                const extensionWithoutDot = extension.replace('.', '');
-                
-                if (extensionWithoutDot === 'fbx') {{
-                    // Use FBXLoader for FBX files
-                    showDebug('Using FBXLoader for FBX file');
-                    const loader = new THREE.FBXLoader();
-                    loader.load(
-                        modelUrl,
-                        (object) => {{
-                            // Center model
-                            const box = new THREE.Box3().setFromObject(object);
-                            const center = box.getCenter(new THREE.Vector3());
-                            const size = box.getSize(new THREE.Vector3());
-                            
-                            object.position.x = -center.x;
-                            object.position.y = -center.y;
-                            object.position.z = -center.z;
-                            
-                            // Adjust camera
-                            const maxDim = Math.max(size.x, size.y, size.z);
-                            camera.position.z = maxDim * 2;
-                            
-                            scene.add(object);
-                        }},
-                        (xhr) => {{
-                            const percent = xhr.loaded / xhr.total * 100;
-                            if (xhr.total > 0) {{
-                                showDebug('Loading: ' + Math.round(percent) + '%');
-                            }}
-                        }},
-                        (error) => {{
-                            console.error('Error loading model:', error);
-                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                            errorDiv.style.display = 'block';
-                            showDebug('Error: ' + error.message);
-                        }}
-                    );
-                }} else if (extensionWithoutDot === 'obj') {{
-                    // Use OBJLoader for OBJ files
-                    showDebug('Using OBJLoader for OBJ file');
-                    const loader = new THREE.OBJLoader();
-                    loader.load(
-                        modelUrl,
-                        (object) => {{
-                            // Center model
-                            const box = new THREE.Box3().setFromObject(object);
-                            const center = box.getCenter(new THREE.Vector3());
-                            const size = box.getSize(new THREE.Vector3());
-                            
-                            object.position.x = -center.x;
-                            object.position.y = -center.y;
-                            object.position.z = -center.z;
-                            
-                            // Adjust camera
-                            const maxDim = Math.max(size.x, size.y, size.z);
-                            camera.position.z = maxDim * 2;
-                            
-                            scene.add(object);
-                        }},
-                        (xhr) => {{
-                            const percent = xhr.loaded / xhr.total * 100;
-                            if (xhr.total > 0) {{
-                                showDebug('Loading: ' + Math.round(percent) + '%');
-                            }}
-                        }},
-                        (error) => {{
-                            console.error('Error loading model:', error);
-                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                            errorDiv.style.display = 'block';
-                            showDebug('Error: ' + error.message);
-                        }}
-                    );
-                }} else {{
-                    // Use GLTFLoader for GLB/GLTF files (default)
-                    showDebug('Using GLTFLoader for ' + extension + ' file');
-                    const loader = new THREE.GLTFLoader();
-                    loader.load(
-                        modelUrl,
-                        (gltf) => {{
-                            // Center model
-                            const box = new THREE.Box3().setFromObject(gltf.scene);
-                            const center = box.getCenter(new THREE.Vector3());
-                            const size = box.getSize(new THREE.Vector3());
-                            
-                            gltf.scene.position.x = -center.x;
-                            gltf.scene.position.y = -center.y;
-                            gltf.scene.position.z = -center.z;
-                            
-                            // Adjust camera
-                            const maxDim = Math.max(size.x, size.y, size.z);
-                            camera.position.z = maxDim * 2;
-                            
-                            scene.add(gltf.scene);
-                        }},
-                        (xhr) => {{
-                            const percent = xhr.loaded / xhr.total * 100;
-                            if (xhr.total > 0) {{
-                                showDebug('Loading: ' + Math.round(percent) + '%');
-                            }}
-                        }},
-                        (error) => {{
-                            console.error('Error loading model:', error);
-                            errorDiv.textContent = 'Failed to load 3D model: ' + error.message;
-                            errorDiv.style.display = 'block';
-                            showDebug('Error: ' + error.message);
-                        }}
-                    );
-                }}
-            }} else {{
-                errorDiv.textContent = 'No model loaded. Send a 3D model to the Telegram bot (@AxisCoreBot) to view it here.';
-                errorDiv.style.display = 'block';
-                showDebug('No model URL provided. This app requires a model parameter in the URL (e.g., ?model=<model_id> or ?uuid=<uuid>)');
-            }}
-            
-            function animate() {{
-                requestAnimationFrame(animate);
-                controls.update();
-                renderer.render(scene, camera);
-            }}
-            
-            animate();
-        </script>
-    </body>
-    </html>
-    """
-    
-    return html
+    # Return model info as JSON for the frontend to render
+    return jsonify({
+        "model_url": model_url,
+        "uuid": uuid_param,
+        "file_extension": file_extension,
+        "base_url": BASE_URL,
+        "status": "success"
+    })
 
-@app.route('/help')
+@app.route('/help', methods=['GET'])
 def help_page():
-    return """
-    <h1>Axiscore 3D Model Viewer API</h1>
-    <p>This API allows you to view and share 3D models via Telegram.</p>
-    <p>Supported file formats:</p>
-    <ul>
-        <li>glTF/GLB (.glb, .gltf)</li>
-        <li>Filmbox (.fbx)</li>
-        <li>Wavefront (.obj)</li>
-    </ul>
-    <p>To use this service, send your 3D model file to the Telegram bot: @AxisCoreBot</p>
-    """
+    # Return API help information as JSON
+    return jsonify({
+        "api_name": "Axiscore 3D Model Viewer API",
+        "description": "This API allows you to view and share 3D models via Telegram.",
+        "supported_formats": [
+            {"name": "glTF/GLB", "extensions": [".glb", ".gltf"]},
+            {"name": "Filmbox", "extensions": [".fbx"]},
+            {"name": "Wavefront", "extensions": [".obj"]}
+        ],
+        "usage": "Send your 3D model file to the Telegram bot: @AxisCoreBot",
+        "status": "success"
+    })
 
 @app.route('/')
 def index():
@@ -997,7 +705,26 @@ def catch_all(path):
     """Catch-all route to support React Router."""
     if path.startswith('api/') or path.startswith('models/'):
         return jsonify({"error": "Route not found"}), 404
-    return send_file('../frontend/build/index.html')
+    
+    # Try different possible paths for the frontend file
+    possible_paths = [
+        '../frontend/build/index.html',  # Original relative path
+        'frontend/build/index.html',     # Without leading ../
+        '/app/frontend/build/index.html' # Absolute path in container
+    ]
+    
+    for possible_path in possible_paths:
+        try:
+            if os.path.exists(possible_path):
+                return send_file(possible_path)
+        except:
+            continue
+            
+    # If we can't find the frontend, return a simple message
+    return jsonify({
+        "error": "Frontend not found",
+        "message": "The React frontend build files were not found. Please make sure to build the frontend."
+    }), 404
 
 @app.route('/model-webhook', methods=['POST'])
 def model_webhook():
