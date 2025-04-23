@@ -40,6 +40,11 @@ from telegram_utils import (
     download_telegram_file,
     get_bot_info
 )
+import db_utils
+from db_utils import (
+    DatabaseManager,
+    create_transaction_decorator
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -55,122 +60,17 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 jwt = JWTManager(app)
 
-# Global variables for database connection
-conn = None
-cursor = None
-DATABASE_URL = os.getenv('DATABASE_URL')
 # Base URL for public-facing URLs (use environment variable or default to localhost)
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
 # Telegram bot token for API calls
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN else ""
 
-# Import the db_transaction factory after defining conn and cursor
-from error_utils import db_transaction as create_db_transaction
+# Initialize the database manager
+db = DatabaseManager()
 
-# Extract host from DATABASE_URL to resolve to IPv4 address
-if DATABASE_URL:
-    host_match = re.search(r'@([^:]+):', DATABASE_URL)
-    if host_match:
-        hostname = host_match.group(1)
-        try:
-            # Get the IPv4 address
-            host_ip = socket.gethostbyname(hostname)
-            # Replace the hostname with the IP address
-            DATABASE_URL = DATABASE_URL.replace('@' + hostname + ':', '@' + host_ip + ':')
-        except socket.gaierror:
-            print(f"Could not resolve hostname {hostname}")
-
-# Initial database connection attempt
-try:
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    cursor = conn.cursor()
-
-    # Create models table if it doesn't exist
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS models (
-            id SERIAL PRIMARY KEY,
-            telegram_id TEXT NOT NULL,
-            model_name TEXT NOT NULL,
-            model_url TEXT NOT NULL,
-            content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Create users table if it doesn't exist
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            telegram_id TEXT NOT NULL UNIQUE,
-            username TEXT,
-            password TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Create large_model_content table if it doesn't exist
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS large_model_content (
-            model_id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    print("Successfully connected to database and initialized tables")
-except psycopg2.OperationalError as e:
-    print(f"Error connecting to database: {e}")
-    # If in development, raise the error; in production, continue with limited functionality
-    if os.getenv('FLASK_ENV') == 'development':
-        raise
-    else:
-        conn = None
-        cursor = None
-        print("Running with limited functionality - database features will be unavailable")
-
-# Create database transaction decorator using the factory
-def ensure_db_connection():
-    """Ensure database connection is active, reconnect if needed."""
-    global conn, cursor, DATABASE_URL
-    
-    try:
-        # Check if connection is closed or cursor is None
-        if conn is None or cursor is None or conn.closed:
-            print("Database connection lost, reconnecting...")
-            # Reconnect to database
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-            cursor = conn.cursor()
-            print("Successfully reconnected to database")
-        
-        # Test connection with a simple query
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        return True
-    except Exception as e:
-        print(f"Failed to ensure database connection: {e}")
-        try:
-            # If connection exists but is broken, close it to avoid leaks
-            if conn and not conn.closed:
-                conn.close()
-        except:
-            pass
-        
-        try:
-            # Attempt to reconnect one more time
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-            cursor = conn.cursor()
-            print("Successfully reconnected to database after error")
-            return True
-        except Exception as reconnect_error:
-            print(f"Failed to reconnect to database: {reconnect_error}")
-            conn = None
-            cursor = None
-            return False
-
-# Create the db_transaction decorator after defining ensure_db_connection
-db_transaction = create_db_transaction(conn, cursor, ensure_db_connection)
+# Create the db_transaction decorator
+db_transaction = create_transaction_decorator(db)
 
 @app.route('/telegram_auth', methods=['POST'])
 def telegram_auth():
@@ -182,17 +82,10 @@ def telegram_auth():
     username = auth_data.get('username', '')
 
     # Check if database connection exists and create user if needed
-    if ensure_db_connection():
-        try:
-            # Check if user exists, create if not
-            cursor.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
-            user = cursor.fetchone()
-            if not user:
-                cursor.execute("INSERT INTO users (telegram_id, username, password) VALUES (%s, %s, %s)", 
-                              (telegram_id, username, ''))
-                conn.commit()
-        except Exception as e:
-            print(f"Database error in telegram_auth: {e}")
+    if db.ensure_connection():
+        user = db.get_user(telegram_id)
+        if not user:
+            db.create_user(telegram_id, username)
     
     access_token = create_access_token(identity=telegram_id)
     return jsonify(access_token=access_token), 200
@@ -231,7 +124,7 @@ def webhook():
                 print(f"Processing file: {file_name}, ID: {file_id}")
                 
                 # Ensure database connection before proceeding
-                if not ensure_db_connection():
+                if not db.ensure_connection():
                     print("Database connection unavailable, cannot process model")
                     send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
@@ -240,8 +133,10 @@ def webhook():
                 
                 if file_data:
                     print(f"File downloaded successfully, size: {file_data['size']} bytes")
+                    # Add telegram_id to file_data for tracking
+                    file_data['telegram_id'] = chat_id
                     # Save to storage and get URL
-                    model_url = save_model_to_storage(file_data)
+                    model_url = db.save_model(file_data, BASE_URL)
                     
                     if model_url:
                         print(f"Model saved successfully, URL: {model_url}")
@@ -361,19 +256,7 @@ def view_model():
 @db_transaction
 def get_models():
     telegram_id = get_jwt_identity()
-    
-    # The database connection is already ensured by the db_transaction decorator
-    cursor.execute("SELECT id, model_name, model_url, created_at FROM models WHERE telegram_id = %s", (telegram_id,))
-    models = cursor.fetchall()
-    
-    model_list = []
-    for model in models:
-        model_list.append({
-            "id": model[0],
-            "name": model[1],
-            "url": model[2],
-            "created_at": model[3].isoformat() if model[3] else None
-        })
+    model_list = db.get_models_for_user(telegram_id)
     
     return jsonify({
         "models": model_list, 
@@ -397,20 +280,22 @@ def add_model():
     model_url = request.json['model_url']
     model_name = request.json.get('model_name', os.path.basename(urllib.parse.urlparse(model_url).path))
     
-    # The database connection is already ensured by the db_transaction decorator
-    cursor.execute(
-        "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s) RETURNING id",
-        (telegram_id, model_name, model_url)
-    )
-    model_id = cursor.fetchone()[0]
+    model_id = db.add_model_for_user(telegram_id, model_name, model_url)
     
-    # Successful response
-    return jsonify({
-        "id": model_id,
-        "name": model_name,
-        "url": model_url,
-        "status": "success"
-    }), 201
+    if model_id:
+        # Successful response
+        return jsonify({
+            "id": model_id,
+            "name": model_name,
+            "url": model_url,
+            "status": "success"
+        }), 201
+    else:
+        return jsonify({
+            "error": "DatabaseError",
+            "message": "Failed to add model", 
+            "status": "error"
+        }), 500
 
 @app.route('/favicon.ico')
 def favicon():
@@ -424,7 +309,7 @@ def serve_model(model_id, filename):
         print(f"🔍 Serving model request: {model_id}/{filename}")
         
         # Ensure database connection
-        if not ensure_db_connection():
+        if not db.ensure_connection():
             print("❌ Database connection unavailable")
             return jsonify({
                 "error": "DatabaseUnavailable",
@@ -433,10 +318,7 @@ def serve_model(model_id, filename):
             }), 503
         
         # Reset any failed transaction state
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.rollback()
         
         # Extract the UUID from the URL if needed
         # Sometimes model_id is the UUID, sometimes it's in the URL
@@ -448,8 +330,11 @@ def serve_model(model_id, filename):
         found_model = False
         
         # STEP 1: Check models table using the URL
-        cursor.execute("SELECT id, model_url FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
-        url_result = cursor.fetchone()
+        url_result = db.execute(
+            "SELECT id, model_url FROM models WHERE model_url LIKE %s", 
+            (f"%{model_id}%",), 
+            fetch='one'
+        )
         
         if url_result:
             found_model = True
@@ -467,8 +352,11 @@ def serve_model(model_id, filename):
         # STEP 2: If we have a UUID, check large_model_content
         if extracted_uuid:
             print(f"🔍 Checking large_model_content table with UUID: {extracted_uuid}")
-            cursor.execute("SELECT content FROM large_model_content WHERE model_id = %s", (extracted_uuid,))
-            large_result = cursor.fetchone()
+            large_result = db.execute(
+                "SELECT content FROM large_model_content WHERE model_id = %s", 
+                (extracted_uuid,), 
+                fetch='one'
+            )
             
             if large_result and large_result[0]:
                 content = large_result[0]
@@ -481,18 +369,21 @@ def serve_model(model_id, filename):
         # STEP 3: If still no content, check large_model_content with the filename
         if not content and not extracted_uuid:
             print(f"🔍 Checking large_model_content table for any entry matching filename")
-            cursor.execute("SELECT model_id, content FROM large_model_content LIMIT 50")
-            all_large_models = cursor.fetchall()
+            all_large_models = db.execute(
+                "SELECT model_id, content FROM large_model_content LIMIT 50", 
+                fetch='all'
+            )
             
-            for lm in all_large_models:
-                large_model_id = lm[0]
-                large_content = lm[1]
-                print(f"📊 Found large model ID: {large_model_id}")
-                
-                if large_content:
-                    content = large_content
-                    print(f"✅ Using content from large model: {large_model_id}")
-                    break
+            if all_large_models:
+                for lm in all_large_models:
+                    large_model_id = lm[0]
+                    large_content = lm[1]
+                    print(f"📊 Found large model ID: {large_model_id}")
+                    
+                    if large_content:
+                        content = large_content
+                        print(f"✅ Using content from large model: {large_model_id}")
+                        break
         
         # If we still don't have content, report a 404
         if not content:
@@ -537,10 +428,7 @@ def serve_model(model_id, filename):
         error_details = log_error(e, f"Error serving model {model_id}/{filename}")
         
         # Always rollback on error
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.rollback()
             
         return jsonify({
             "error": error_details['type'],
@@ -785,11 +673,14 @@ def miniapp():
     if uuid_param and not model_url:
         print(f"Received UUID parameter: {uuid_param}")
         # Search for a model with this UUID
-        if ensure_db_connection():
+        if db.ensure_connection():
             try:
                 # Also get the model_name to determine correct file extension
-                cursor.execute("SELECT model_url, model_name FROM models WHERE model_url LIKE %s", (f"%{uuid_param}%",))
-                result = cursor.fetchone()
+                result = db.execute(
+                    "SELECT model_url, model_name FROM models WHERE model_url LIKE %s", 
+                    (f"%{uuid_param}%",), 
+                    fetch='one'
+                )
                 if result and result[0]:
                     model_url = result[0]
                     model_name = result[1] if len(result) > 1 else ""
@@ -1154,7 +1045,7 @@ def save_model_to_storage(file_data):
             return None
             
         # Ensure database connection
-        if not ensure_db_connection():
+        if not db.ensure_connection():
             print("❌ Database connection unavailable, cannot save model")
             return None
             
@@ -1187,20 +1078,20 @@ def save_model_to_storage(file_data):
         print(f"📊 Content size: {content_size} bytes, File type: {file_extension}")
         
         # Begin a transaction
-        cursor.execute("BEGIN")
+        db.execute("BEGIN")
         
         # First, check if the large_model_content table exists
-        cursor.execute("""
+        db.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
                 WHERE table_name = 'large_model_content'
             )
         """)
         
-        if not cursor.fetchone()[0]:
+        if not db.fetchone()[0]:
             # Create large_model_content table if it doesn't exist
             print("📋 Creating large_model_content table")
-            cursor.execute("""
+            db.execute("""
                 CREATE TABLE large_model_content (
                     model_id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
@@ -1209,17 +1100,17 @@ def save_model_to_storage(file_data):
             """)
         
         # Check if content_size column exists in models table
-        cursor.execute("""
+        db.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.columns 
                 WHERE table_name = 'models' AND column_name = 'content_size'
             )
         """)
         
-        if not cursor.fetchone()[0]:
+        if not db.fetchone()[0]:
             # Add content_size column if it doesn't exist
             print("📋 Adding content_size column to models table")
-            cursor.execute("ALTER TABLE models ADD COLUMN content_size BIGINT")
+            db.execute("ALTER TABLE models ADD COLUMN content_size BIGINT")
             
         # Extract proper telegram_id with fallback to avoid 'unknown'
         telegram_id = file_data.get('telegram_id')
@@ -1234,7 +1125,7 @@ def save_model_to_storage(file_data):
         
         # Always store content in large_model_content table for backup
         try:
-            cursor.execute(
+            db.execute(
                 "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
                 (model_id, file_data['content'])
             )
@@ -1248,7 +1139,7 @@ def save_model_to_storage(file_data):
             print(f"📊 Large content detected ({content_size} bytes), storing reference only")
             # For large models, store the model reference
             try:
-                cursor.execute(
+                db.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
                     (telegram_id, filename, model_url, content_size, datetime.now())
                 )
@@ -1258,7 +1149,7 @@ def save_model_to_storage(file_data):
                 if "column" in str(e) and "does not exist" in str(e):
                     print(f"⚠️ Column error: {e}, trying with available columns")
                     # Try with just the essential columns
-                    cursor.execute(
+                    db.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
                         (telegram_id, filename, model_url)
                     )
@@ -1268,7 +1159,7 @@ def save_model_to_storage(file_data):
             # For smaller models, store the content directly
             print(f"📊 Standard content size ({content_size} bytes), storing directly")
             try:
-                cursor.execute(
+                db.execute(
                     "INSERT INTO models (telegram_id, model_name, model_url, content, content_size, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
                     (telegram_id, filename, model_url, file_data['content'], content_size, datetime.now())
                 )
@@ -1278,7 +1169,7 @@ def save_model_to_storage(file_data):
                 if "column" in str(e) and "does not exist" in str(e):
                     print(f"⚠️ Column error: {e}, trying with available columns")
                     # Try with just the essential columns
-                    cursor.execute(
+                    db.execute(
                         "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s)",
                         (telegram_id, filename, model_url, file_data['content'])
                     )
@@ -1286,13 +1177,13 @@ def save_model_to_storage(file_data):
                     raise
         
         # Commit the transaction
-        conn.commit()
+        db.execute("COMMIT")
         print(f"✅ Successfully saved model {model_id} to database")
         
         # For debugging, try to verify the content was stored
         try:
-            cursor.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
-            if cursor.fetchone():
+            db.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
+            if db.fetchone():
                 print(f"✅ Verified: Content exists in large_model_content table")
             else:
                 print(f"⚠️ Warning: Content not found in large_model_content table")
@@ -1304,8 +1195,7 @@ def save_model_to_storage(file_data):
         
     except Exception as e:
         # Rollback in case of error
-        if conn:
-            conn.rollback()
+        db.execute("ROLLBACK")
         print(f"❌ Error saving model to storage: {e}")
         import traceback
         print(traceback.format_exc())
@@ -1366,11 +1256,11 @@ def model_webhook():
             if not model_url:
                 print("Failed to save model to storage")
                 # Update the user's status in the database
-                cursor.execute(
+                db.execute(
                     "UPDATE users SET status = %s WHERE telegram_id = %s",
                     ("error", chat_id)
                 )
-                conn.commit()
+                db.execute("COMMIT")
                 
                 # Send error message to user
                 send_message(
@@ -1382,11 +1272,11 @@ def model_webhook():
             
             # Update the user's status and model URL in the database
             try:
-                cursor.execute(
+                db.execute(
                     "UPDATE users SET status = %s, model_url = %s WHERE telegram_id = %s",
                     ("completed", model_url, chat_id)
                 )
-                conn.commit()
+                db.execute("COMMIT")
             except Exception as db_error:
                 print(f"Database update error: {db_error}")
                 # If we can't update the database but saved the model, still try to notify the user
@@ -1412,11 +1302,11 @@ def model_webhook():
             print(f"Model generation failed: {error}")
             
             # Update the user's status in the database
-            cursor.execute(
+            db.execute(
                 "UPDATE users SET status = %s WHERE telegram_id = %s",
                 ("failed", chat_id)
             )
-            conn.commit()
+            db.execute("COMMIT")
             
             # Send error message to user
             send_message(
@@ -1443,18 +1333,18 @@ def model_info(model_id):
     """Get information about a model for debugging purposes."""
     try:
         # Ensure database connection
-        if not ensure_db_connection():
+        if not db.ensure_connection():
             return jsonify({"error": "Database connection unavailable"}), 500
             
         # First, try to rollback any failed transaction to get clean state
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.execute("ROLLBACK")
             
         # Check for model in models table
-        cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models WHERE model_url LIKE %s", (f"%{model_id}%",))
-        models = cursor.fetchall()
+        models = db.execute(
+            "SELECT id, telegram_id, model_name, model_url FROM models WHERE model_url LIKE %s", 
+            (f"%{model_id}%",), 
+            fetch='all'
+        )
         
         models_info = []
         for model in models:
@@ -1466,8 +1356,11 @@ def model_info(model_id):
             })
             
         # Check in large_model_content table
-        cursor.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
-        large_model = cursor.fetchone()
+        large_model = db.execute(
+            "SELECT model_id FROM large_model_content WHERE model_id = %s", 
+            (model_id,), 
+            fetch='one'
+        )
         
         large_model_info = None
         if large_model:
@@ -1485,10 +1378,7 @@ def model_info(model_id):
         
     except Exception as e:
         # Always rollback on error
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.execute("ROLLBACK")
             
         import traceback
         return jsonify({
@@ -1501,18 +1391,18 @@ def find_model_by_name(filename):
     """Find a model by its filename."""
     try:
         # Ensure database connection
-        if not ensure_db_connection():
+        if not db.ensure_connection():
             return jsonify({"error": "Database connection unavailable"}), 500
             
         # Reset transaction state
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.execute("ROLLBACK")
             
         # Search by filename
-        cursor.execute("SELECT id, telegram_id, model_name, model_url FROM models WHERE model_name = %s", (filename,))
-        models = cursor.fetchall()
+        models = db.execute(
+            "SELECT id, telegram_id, model_name, model_url FROM models WHERE model_name = %s", 
+            (filename,), 
+            fetch='all'
+        )
         
         results = []
         for model in models:
@@ -1522,8 +1412,11 @@ def find_model_by_name(filename):
             model_url = model[3]
             
             # Check if content exists
-            cursor.execute("SELECT content FROM models WHERE id = %s", (model_id,))
-            content_result = cursor.fetchone()
+            content_result = db.execute(
+                "SELECT content FROM models WHERE id = %s", 
+                (model_id,), 
+                fetch='one'
+            )
             has_content = content_result is not None and content_result[0] is not None
             
             results.append({
@@ -1542,10 +1435,7 @@ def find_model_by_name(filename):
         
     except Exception as e:
         # Always rollback on error
-        try:
-            conn.rollback()
-        except:
-            pass
+        db.execute("ROLLBACK")
             
         import traceback
         return jsonify({
