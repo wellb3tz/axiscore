@@ -16,6 +16,7 @@ import base64
 import io
 import uuid
 from datetime import datetime
+
 # Import modules
 import viewer_utils
 from viewer_utils import (
@@ -25,7 +26,20 @@ from viewer_utils import (
     get_telegram_parameters,
     generate_threejs_viewer_html
 )
-from error_utils import log_error, api_error
+import error_utils
+from error_utils import (
+    log_error,
+    api_error
+)
+import telegram_utils
+from telegram_utils import (
+    check_telegram_auth,
+    send_message,
+    send_inline_button,
+    send_webapp_button,
+    download_telegram_file,
+    get_bot_info
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,6 +61,9 @@ cursor = None
 DATABASE_URL = os.getenv('DATABASE_URL')
 # Base URL for public-facing URLs (use environment variable or default to localhost)
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
+# Telegram bot token for API calls
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN else ""
 
 # Import the db_transaction factory after defining conn and cursor
 from error_utils import db_transaction as create_db_transaction
@@ -113,9 +130,6 @@ except psycopg2.OperationalError as e:
         cursor = None
         print("Running with limited functionality - database features will be unavailable")
 
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN else ""
-
 # Create database transaction decorator using the factory
 def ensure_db_connection():
     """Ensure database connection is active, reconnect if needed."""
@@ -158,17 +172,10 @@ def ensure_db_connection():
 # Create the db_transaction decorator after defining ensure_db_connection
 db_transaction = create_db_transaction(conn, cursor, ensure_db_connection)
 
-def check_telegram_auth(data):
-    check_hash = data.pop('hash')
-    data_check_string = "\n".join([f"{k}={v}" for k, v in sorted(data.items())])
-    secret_key = hashlib.sha256(TELEGRAM_BOT_SECRET.encode()).digest()
-    hmac_string = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-    return hmac_string == check_hash
-
 @app.route('/telegram_auth', methods=['POST'])
 def telegram_auth():
     auth_data = request.json
-    if not check_telegram_auth(auth_data):
+    if not check_telegram_auth(auth_data, TELEGRAM_BOT_SECRET):
         return jsonify({"msg": "Telegram authentication failed"}), 401
 
     telegram_id = auth_data['id']
@@ -226,10 +233,10 @@ def webhook():
                 # Ensure database connection before proceeding
                 if not ensure_db_connection():
                     print("Database connection unavailable, cannot process model")
-                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.")
+                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                     
-                file_data = download_telegram_file(file_id)
+                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN)
                 
                 if file_data:
                     print(f"File downloaded successfully, size: {file_data['size']} bytes")
@@ -239,9 +246,8 @@ def webhook():
                     if model_url:
                         print(f"Model saved successfully, URL: {model_url}")
                         # Get the bot username for creating the Mini App URL
-                        bot_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
-                        bot_info = requests.get(bot_info_url).json()
-                        bot_username = bot_info.get('result', {}).get('username', '')
+                        bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
+                        bot_username = bot_info.get('username', '') if bot_info else ''
                         
                         # Extract UUID from model_url for a cleaner parameter
                         uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
@@ -296,31 +302,25 @@ def webhook():
                         }
                         
                         # Send the message with combined keyboard
-                        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                        payload = {
-                            'chat_id': chat_id,
-                            'text': response_text,
-                            'reply_markup': keyboard
-                        }
-                        requests.post(url, json=payload)
+                        send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
                         
                         return jsonify({"status": "ok"}), 200
                     else:
                         print("Failed to save model to storage")
-                        send_message(chat_id, "Failed to store your 3D model. Database error.")
+                        send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
                 else:
                     print("Failed to download file from Telegram")
-                    send_message(chat_id, "Failed to download your file from Telegram. Please try again.")
+                    send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
             except psycopg2.Error as dbe:
                 print(f"Database error processing 3D model: {dbe}")
-                send_message(chat_id, f"Database error: {str(dbe)[:100]}. Please contact the administrator.")
+                send_message(chat_id, f"Database error: {str(dbe)[:100]}. Please contact the administrator.", TELEGRAM_BOT_TOKEN)
             except Exception as e:
                 import traceback
                 print(f"Error processing 3D model: {e}")
                 print(traceback.format_exc())
-                send_message(chat_id, "Failed to process your 3D model. Please try again.")
+                send_message(chat_id, "Failed to process your 3D model. Please try again.", TELEGRAM_BOT_TOKEN)
         else:
-            send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).")
+            send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).", TELEGRAM_BOT_TOKEN)
     # Handle text messages
     else:
         # Check for specific commands
@@ -339,31 +339,9 @@ Axiscore 3D Model Viewer Help:
             # Generic response for other messages
             response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, or .obj) to view it in Axiscore. You said: {text}"
         
-        send_message(chat_id, response_text)
+        send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
     
     return jsonify({"status": "ok"}), 200
-
-def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': chat_id,
-        'text': text
-    }
-    requests.post(url, json=payload)
-
-def send_inline_button(chat_id, text, button_text, button_url):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'reply_markup': {
-            'inline_keyboard': [[{
-                'text': button_text,
-                'url': button_url
-            }]]
-        }
-    }
-    requests.post(url, json=payload)
 
 @app.route('/view', methods=['GET'])
 def view_model():
@@ -1164,60 +1142,6 @@ def index():
         "supported_formats": ["glb", "gltf", "fbx", "obj"]
     })
 
-def download_telegram_file(file_id):
-    """Download a file from Telegram servers using its file_id and return content."""
-    try:
-        # Get file path from Telegram
-        file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
-        file_info_response = requests.get(file_info_url)
-        file_info = file_info_response.json()
-        
-        print(f"File info response: {file_info}")
-        
-        if file_info.get('ok'):
-            telegram_file_path = file_info['result']['file_path']
-            file_size = file_info['result'].get('file_size', 0)
-            
-            # Check file size, Telegram usually limits to 20MB
-            if file_size > 20 * 1024 * 1024:
-                print(f"File too large: {file_size} bytes")
-                return None
-                
-            # Download file from Telegram
-            download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{telegram_file_path}"
-            response = requests.get(download_url, stream=True)
-            
-            if response.status_code == 200:
-                # Get the file content as bytes
-                file_content = response.content
-                print(f"Downloaded file size: {len(file_content)} bytes")
-                
-                # Create local path for debug purposes
-                local_filename = f"{file_id}_{os.path.basename(telegram_file_path)}"
-                
-                # Encode file content as base64 for storage in DB
-                try:
-                    base64_content = base64.b64encode(file_content).decode('utf-8')
-                    print(f"Base64 encoding successful, length: {len(base64_content)}")
-                    
-                    return {
-                        'filename': local_filename,
-                        'content': base64_content,
-                        'size': len(file_content)
-                    }
-                except Exception as e:
-                    print(f"Error during base64 encoding: {e}")
-                    return None
-            else:
-                print(f"Error downloading file: {response.status_code}, {response.text}")
-                return None
-        else:
-            print(f"Error getting file info: {file_info}")
-            return None
-    except Exception as e:
-        print(f"Error in download_telegram_file: {e}")
-        return None
-
 def save_model_to_storage(file_data):
     """
     Save a 3D model to storage and return a unique URL.
@@ -1451,7 +1375,8 @@ def model_webhook():
                 # Send error message to user
                 send_message(
                     chat_id=chat_id,
-                    text="Failed to process your 3D model. Please try again."
+                    text="Failed to process your 3D model. Please try again.",
+                    bot_token=TELEGRAM_BOT_TOKEN
                 )
                 return jsonify({"error": "Failed to save model to storage"}), 500
             
@@ -1471,7 +1396,8 @@ def model_webhook():
                 public_url = f"{BASE_URL}{model_url}"
                 send_message(
                     chat_id,
-                    f"Your 3D model is ready! View it here: {public_url}"
+                    f"Your 3D model is ready! View it here: {public_url}",
+                    bot_token=TELEGRAM_BOT_TOKEN
                 )
                 print(f"Success message sent to user {chat_id} with URL {public_url}")
             except Exception as bot_error:
@@ -1495,7 +1421,8 @@ def model_webhook():
             # Send error message to user
             send_message(
                 chat_id=chat_id,
-                text=f"Sorry, we couldn't create your 3D model. Error: {error}"
+                text=f"Sorry, we couldn't create your 3D model. Error: {error}",
+                bot_token=TELEGRAM_BOT_TOKEN
             )
             
             return jsonify({"success": True})
