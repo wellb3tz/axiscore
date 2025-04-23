@@ -24,6 +24,10 @@ const ModelViewer = () => {
   const [showDebug, setShowDebug] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   
+  // Mobile optimization state
+  const [isMobile, setIsMobile] = useState(false);
+  const [devicePerformance, setDevicePerformance] = useState('high'); // 'low', 'medium', 'high'
+  
   // State to track model loading
   const [loadingProgress, setLoadingProgress] = useState(0);
   
@@ -41,6 +45,75 @@ const ModelViewer = () => {
   // Detect Telegram environment
   const isTelegramMode = location.pathname.includes('miniapp') || 
                          (typeof window !== 'undefined' && window.Telegram?.WebApp);
+
+  // Detect mobile device and performance capabilities
+  useEffect(() => {
+    // Detect if device is mobile
+    const checkMobile = () => {
+      const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+      const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+      const isMobileDevice = mobileRegex.test(userAgent);
+      setIsMobile(isMobileDevice);
+      addDebugInfo(`Device detected as: ${isMobileDevice ? 'Mobile' : 'Desktop'}`);
+      
+      // Detect device performance level
+      let performanceLevel = 'high';
+      
+      // Use hardware concurrency (CPU cores) as a performance indicator
+      const cpuCores = navigator.hardwareConcurrency || 4;
+      
+      // Check if it's a low-end device
+      if (
+        isMobileDevice && 
+        (
+          // Low CPU cores
+          cpuCores <= 4 ||
+          // Check for low memory (not always available)
+          (navigator.deviceMemory !== undefined && navigator.deviceMemory <= 4) ||
+          // Older iPhones and Android devices
+          /iPhone\s(5|6|7|8|SE)|Android.*\s(4|5|6)\./.test(userAgent)
+        )
+      ) {
+        performanceLevel = 'low';
+      } 
+      // Medium performance
+      else if (isMobileDevice) {
+        performanceLevel = 'medium';
+      }
+      
+      setDevicePerformance(performanceLevel);
+      addDebugInfo(`Performance level detected: ${performanceLevel}`);
+    };
+    
+    checkMobile();
+    
+    // Handle orientation change for mobile
+    const handleOrientationChange = () => {
+      if (rendererRef.current && containerRef.current) {
+        setTimeout(() => {
+          const width = containerRef.current.clientWidth;
+          const height = containerRef.current.clientHeight;
+          
+          if (cameraRef.current) {
+            cameraRef.current.aspect = width / height;
+            cameraRef.current.updateProjectionMatrix();
+          }
+          
+          if (rendererRef.current) {
+            rendererRef.current.setSize(width, height);
+          }
+          
+          addDebugInfo(`Orientation changed: ${width}x${height}`);
+        }, 300); // Small delay to ensure new dimensions are available
+      }
+    };
+    
+    window.addEventListener('orientationchange', handleOrientationChange);
+    
+    return () => {
+      window.removeEventListener('orientationchange', handleOrientationChange);
+    };
+  }, []);
 
   // Add Oswald font
   useEffect(() => {
@@ -238,38 +311,92 @@ const ModelViewer = () => {
     camera.position.set(5, 5, 5); // Position camera at an angle for better initial view
     cameraRef.current = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer with mobile optimizations
+    const renderer = new THREE.WebGLRenderer({ 
+      antialias: !isMobile || devicePerformance === 'high',  // Disable antialiasing on low/medium mobile
+      powerPreference: 'high-performance',
+      alpha: false,
+      stencil: false
+    });
+    
+    // Set pixel ratio based on device performance
+    if (isMobile) {
+      switch (devicePerformance) {
+        case 'low':
+          renderer.setPixelRatio(Math.min(1.0, window.devicePixelRatio));
+          break;
+        case 'medium':
+          renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio));
+          break;
+        default:
+          renderer.setPixelRatio(Math.min(2.0, window.devicePixelRatio));
+      }
+      addDebugInfo(`Mobile renderer: Pixel ratio set to ${renderer.getPixelRatio()}`);
+    } else {
+      renderer.setPixelRatio(window.devicePixelRatio);
+    }
+    
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
+    
+    // Configure shadows based on device performance
+    if (devicePerformance === 'low') {
+      renderer.shadowMap.enabled = false;
+      addDebugInfo('Shadows disabled for performance');
+    } else {
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = devicePerformance === 'high' 
+        ? THREE.PCFSoftShadowMap  // Better quality shadows for high-end devices
+        : THREE.BasicShadowMap;    // Basic shadows for medium devices
+      addDebugInfo(`Shadow quality set to: ${devicePerformance === 'high' ? 'high' : 'medium'}`);
+    }
+    
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Lighting
+    // Lighting optimized for mobile
     // Ambient light for general illumination
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    const ambientLight = new THREE.AmbientLight(0xffffff, isMobile ? 0.6 : 0.5);
     scene.add(ambientLight);
 
-    // Directional light with shadows
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(5, 10, 7);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 1024;
-    directionalLight.shadow.mapSize.height = 1024;
-    scene.add(directionalLight);
-    
-    // Add a hemisphere light for more natural lighting
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
-    hemiLight.position.set(0, 20, 0);
-    scene.add(hemiLight);
+    // Only add complex lighting on medium/high performance devices
+    if (devicePerformance !== 'low') {
+      // Directional light with shadows
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(5, 10, 7);
+      
+      if (devicePerformance === 'high') {
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 1024;
+        directionalLight.shadow.mapSize.height = 1024;
+      } else if (devicePerformance === 'medium') {
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 512;
+        directionalLight.shadow.mapSize.height = 512;
+      }
+      
+      scene.add(directionalLight);
+      
+      // Hemisphere light for more natural lighting (only on high-end devices)
+      if (devicePerformance === 'high') {
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        hemiLight.position.set(0, 20, 0);
+        scene.add(hemiLight);
+      }
+    } else {
+      // For low-end devices, just add a simple directional light without shadows
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(5, 10, 7);
+      scene.add(directionalLight);
+    }
 
-    // Controls
+    // Controls optimized for mobile
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.1;
+    controls.enableDamping = !isMobile || devicePerformance !== 'low';  // Disable damping on low-end mobile
+    controls.dampingFactor = isMobile ? 0.2 : 0.1;  // Faster damping on mobile
     controls.enableZoom = true;
-    controls.enablePan = true;
+    controls.enablePan = !isMobile;  // Disable panning on mobile for simpler interaction
+    controls.rotateSpeed = isMobile ? 0.6 : 1.0;  // Slower rotation on mobile for more control
+    controls.zoomSpeed = isMobile ? 0.8 : 1.0;  // Slower zoom on mobile
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.5;
     controls.target.set(0, 0, 0);
@@ -392,24 +519,75 @@ const ModelViewer = () => {
       // Store the model for later access
       modelRef.current = model;
 
-      // Apply standard processing to all model types
-      model.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = true;
-          child.receiveShadow = true;
-          
-          // Ensure materials are properly configured
-          if (child.material) {
-            if (Array.isArray(child.material)) {
-              child.material.forEach(material => {
-                material.side = THREE.DoubleSide;
-              });
-            } else {
-              child.material.side = THREE.DoubleSide;
+      // Optimize model for mobile if needed
+      if (isMobile) {
+        addDebugInfo('Applying mobile optimizations to model');
+        
+        // For low performance devices, simplify materials
+        if (devicePerformance === 'low') {
+          model.traverse((child) => {
+            if (child.isMesh) {
+              // Skip shadows on low-end devices
+              child.castShadow = false;
+              child.receiveShadow = false;
+              
+              // Simplify materials on low-end devices
+              if (child.material) {
+                // Ensure materials are properly configured
+                if (Array.isArray(child.material)) {
+                  child.material.forEach(material => {
+                    simplifyMaterial(material);
+                  });
+                } else {
+                  simplifyMaterial(child.material);
+                }
+              }
+            }
+          });
+        } else {
+          // Medium to high performance - standard material optimization
+          model.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = devicePerformance === 'high';
+              child.receiveShadow = devicePerformance === 'high';
+              
+              // Ensure materials are properly configured
+              if (child.material) {
+                if (Array.isArray(child.material)) {
+                  child.material.forEach(material => {
+                    material.side = THREE.DoubleSide;
+                    // Optimize textures for mobile
+                    optimizeTextures(material);
+                  });
+                } else {
+                  child.material.side = THREE.DoubleSide;
+                  // Optimize textures for mobile
+                  optimizeTextures(child.material);
+                }
+              }
+            }
+          });
+        }
+      } else {
+        // Desktop - full quality
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+            
+            // Ensure materials are properly configured
+            if (child.material) {
+              if (Array.isArray(child.material)) {
+                child.material.forEach(material => {
+                  material.side = THREE.DoubleSide;
+                });
+              } else {
+                child.material.side = THREE.DoubleSide;
+              }
             }
           }
-        }
-      });
+        });
+      }
 
       // Detect if this is an FBX model
       const isFbx = object.constructor.name === 'Group' && 
@@ -498,6 +676,61 @@ const ModelViewer = () => {
       
       // We're removing the Telegram MainButton that showed "Model Loaded"
     };
+    
+    // Helper function to simplify materials for low-end devices
+    const simplifyMaterial = (material) => {
+      // Set material to single sided for performance
+      material.side = THREE.FrontSide;
+      
+      // Disable expensive material features
+      if (material.map) {
+        // Keep the diffuse map but make sure it's optimized
+        optimizeTextures(material);
+      } else {
+        // For materials without textures, use basic material
+        const color = material.color ? material.color.clone() : new THREE.Color(0xcccccc);
+        material.dispose();
+        
+        // Replace with basic material for better performance
+        const newMaterial = new THREE.MeshBasicMaterial({
+          color: color,
+          side: THREE.FrontSide
+        });
+        
+        // Copy the original material's properties that we want to keep
+        Object.assign(material, newMaterial);
+      }
+    };
+    
+    // Helper function to optimize textures
+    const optimizeTextures = (material) => {
+      // Optimize texture settings for mobile
+      if (material.map) {
+        material.map.generateMipmaps = devicePerformance !== 'low';
+        material.map.anisotropy = devicePerformance === 'high' ? 4 : 1;
+      }
+      
+      // Remove unnecessary textures on low-end devices
+      if (devicePerformance === 'low') {
+        // Keep only the essential textures
+        if (material.bumpMap) {
+          material.bumpMap.dispose();
+          material.bumpMap = null;
+        }
+        if (material.normalMap) {
+          material.normalMap.dispose();
+          material.normalMap = null;
+        }
+        if (material.specularMap) {
+          material.specularMap.dispose();
+          material.specularMap = null;
+        }
+        if (material.envMap) {
+          material.envMap.dispose();
+          material.envMap = null;
+        }
+      }
+    };
 
     // Load the model
     try {
@@ -568,9 +801,6 @@ const ModelViewer = () => {
             // Standard error with no fallback attempted
             setModelError(`Failed to load 3D model: ${error.message}`);
             setModelLoading(false);
-            addDebugInfo(`Error: ${error.message}`);
-            
-            // If loading fails, provide suggestions
             addDebugInfo(`Suggestions: 
             - Check if the model URL is accessible
             - Ensure the model format matches the extension
@@ -585,23 +815,34 @@ const ModelViewer = () => {
       setModelLoading(false);
     }
 
-    // Animation loop
+    // Animation loop optimized for mobile
     const animate = () => {
+      // Skip frames on low-end mobile devices to improve performance
+      if (isMobile && devicePerformance === 'low') {
+        // Only update every other frame on low-end devices
+        if (animationIdRef.current % 2 !== 0) {
+          animationIdRef.current = requestAnimationFrame(animate);
+          return animationIdRef.current;
+        }
+      }
+      
       const animationId = requestAnimationFrame(animate);
       animationIdRef.current = animationId;
       
       if (controlsRef.current) {
         controlsRef.current.update();
       }
+      
       if (rendererRef.current && sceneRef.current && cameraRef.current) {
         rendererRef.current.render(sceneRef.current, cameraRef.current);
       }
+      
       return animationId;
     };
     
     animate();
 
-    // Cleanup function - Improved unmounting
+    // Cleanup function - Improved unmounting with mobile optimizations
     return () => {
       window.removeEventListener('resize', handleResize);
       
@@ -638,6 +879,13 @@ const ModelViewer = () => {
       if (rendererRef.current) {
         rendererRef.current.dispose();
         
+        // Force GPU memory cleanup
+        const gl = rendererRef.current.getContext();
+        if (gl) {
+          const loseContext = gl.getExtension('WEBGL_lose_context');
+          if (loseContext) loseContext.loseContext();
+        }
+        
         // Remove canvas from DOM
         if (containerRef.current && rendererRef.current.domElement) {
           if (containerRef.current.contains(rendererRef.current.domElement)) {
@@ -650,8 +898,11 @@ const ModelViewer = () => {
       
       // Clear camera reference
       cameraRef.current = null;
+      
+      // Clear any large objects from memory
+      if (window.gc) window.gc();
     };
-  }, [modelData, apiLoading, apiError, location, isTelegramMode]);
+  }, [modelData, apiLoading, apiError, location, isTelegramMode, isMobile, devicePerformance]);
   
   // Helper function to dispose of materials and geometries recursively
   const disposeMeshes = (object) => {
@@ -745,17 +996,20 @@ const ModelViewer = () => {
     }
   };
 
-  // Shared button style
+  // Shared button style optimized for mobile
   const buttonStyle = {
     backgroundColor: 'rgba(0,0,0,0.6)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
-    padding: '8px 16px',
+    padding: isMobile ? '10px 18px' : '8px 16px', // Larger touch targets on mobile
     cursor: 'pointer',
     fontWeight: 'bold',
     fontFamily: 'Oswald, sans-serif',
-    fontSize: '14px'
+    fontSize: isMobile ? '16px' : '14px', // Larger text on mobile
+    touchAction: 'manipulation', // Optimize for touch
+    WebkitTapHighlightColor: 'transparent', // Remove tap highlight on mobile
+    userSelect: 'none' // Prevent text selection
   };
 
   // Handle API loading state
@@ -767,7 +1021,7 @@ const ModelViewer = () => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontSize: '18px',
+        fontSize: isMobile ? '20px' : '18px', // Larger text on mobile
         fontFamily: 'Oswald, sans-serif'
       }}>
         Loading model data...
@@ -786,7 +1040,7 @@ const ModelViewer = () => {
         justifyContent: 'center',
         alignItems: 'center',
         color: 'red',
-        fontSize: '18px',
+        fontSize: isMobile ? '20px' : '18px', // Larger text on mobile
         padding: '20px',
         fontFamily: 'Oswald, sans-serif'
       }}>
@@ -794,7 +1048,7 @@ const ModelViewer = () => {
         {isTelegramMode ? (
           <div style={{ 
             marginTop: '20px',
-            fontSize: '14px',
+            fontSize: isMobile ? '16px' : '14px', // Larger text on mobile
             color: '#666',
             maxWidth: '600px',
             textAlign: 'center'
@@ -804,7 +1058,7 @@ const ModelViewer = () => {
         ) : (
           <div style={{ 
             marginTop: '20px',
-            fontSize: '14px',
+            fontSize: isMobile ? '16px' : '14px', // Larger text on mobile
             color: '#666',
             maxWidth: '600px',
             textAlign: 'center'
@@ -825,7 +1079,7 @@ const ModelViewer = () => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontSize: '18px',
+        fontSize: isMobile ? '20px' : '18px', // Larger text on mobile
         fontFamily: 'Oswald, sans-serif'
       }}>
         No model data available
@@ -840,15 +1094,20 @@ const ModelViewer = () => {
       position: 'relative',
       backgroundColor: '#f0f0f0',
       overflow: 'hidden',
-      fontFamily: 'Oswald, sans-serif'
+      fontFamily: 'Oswald, sans-serif',
+      // Disable pull-to-refresh on mobile
+      overscrollBehavior: 'none',
+      // Optimize touch behavior
+      touchAction: 'none'
     }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       
-      {/* Info button - now in the top left */}
+      {/* Info button - now in the top left with mobile optimization */}
       <div style={{
         position: 'absolute',
-        top: '20px',
-        left: '20px'
+        top: isMobile ? '24px' : '20px', // Move down slightly on mobile
+        left: isMobile ? '24px' : '20px', // Move right slightly on mobile
+        zIndex: 10
       }}>
         <button 
           onClick={() => setShowInfo(!showInfo)}
@@ -858,11 +1117,12 @@ const ModelViewer = () => {
         </button>
       </div>
       
-      {/* Debug button - now in the top right */}
+      {/* Debug button - now in the top right with mobile optimization */}
       <div style={{
         position: 'absolute',
-        top: '20px',
-        right: '20px'
+        top: isMobile ? '24px' : '20px', // Move down slightly on mobile
+        right: isMobile ? '24px' : '20px', // Move left slightly on mobile
+        zIndex: 10
       }}>
         <button 
           onClick={() => setShowDebug(!showDebug)}
@@ -872,23 +1132,25 @@ const ModelViewer = () => {
         </button>
       </div>
       
-      {/* Model info - shown when info button is clicked */}
+      {/* Model info - shown when info button is clicked, optimized for mobile */}
       {showInfo && (
         <div className="model-info" style={{
           position: 'absolute',
-          top: '70px',
-          left: '20px',
+          top: isMobile ? '84px' : '70px', // Position below button on mobile
+          left: isMobile ? '24px' : '20px',
           backgroundColor: 'rgba(0,0,0,0.6)',
           color: 'white',
-          padding: '10px',
+          padding: isMobile ? '14px' : '10px', // Larger padding on mobile
           borderRadius: '4px',
-          maxWidth: '300px',
-          fontSize: '14px',
-          fontFamily: 'Oswald, sans-serif'
+          maxWidth: isMobile ? '80%' : '300px', // Wider on mobile
+          fontSize: isMobile ? '16px' : '14px', // Larger text on mobile
+          fontFamily: 'Oswald, sans-serif',
+          zIndex: 9
         }}>
           <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
           <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
           {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
+          {isMobile && <div><strong>Device:</strong> Mobile ({devicePerformance} performance)</div>}
         </div>
       )}
       
@@ -898,19 +1160,20 @@ const ModelViewer = () => {
           top: '50%', 
           left: '50%', 
           transform: 'translate(-50%, -50%)',
-          fontSize: '18px',
+          fontSize: isMobile ? '20px' : '18px', // Larger text on mobile
           color: 'white',
           backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          padding: '20px',
+          padding: isMobile ? '24px' : '20px', // Larger padding on mobile
           borderRadius: '10px',
           textAlign: 'center',
-          fontFamily: 'Oswald, sans-serif'
+          fontFamily: 'Oswald, sans-serif',
+          zIndex: 100
         }}>
           <div>Loading model...</div>
           <div style={{ marginTop: '10px' }}>{loadingProgress}%</div>
           <div style={{ 
-            width: '200px', 
-            height: '6px', 
+            width: isMobile ? '240px' : '200px', // Wider on mobile
+            height: isMobile ? '8px' : '6px', // Taller on mobile
             backgroundColor: '#444', 
             borderRadius: '3px',
             marginTop: '10px'
@@ -931,14 +1194,15 @@ const ModelViewer = () => {
           top: '50%',
           left: '50%',
           transform: 'translate(-50%, -50%)',
-          fontSize: '18px',
+          fontSize: isMobile ? '20px' : '18px', // Larger text on mobile
           color: 'white',
           backgroundColor: 'rgba(255, 0, 0, 0.7)',
-          padding: '20px',
+          padding: isMobile ? '24px' : '20px', // Larger padding on mobile
           borderRadius: '10px',
           textAlign: 'center',
-          maxWidth: '80%',
-          fontFamily: 'Oswald, sans-serif'
+          maxWidth: isMobile ? '90%' : '80%', // Wider on mobile
+          fontFamily: 'Oswald, sans-serif',
+          zIndex: 100
         }}>
           {modelError}
         </div>
@@ -951,13 +1215,14 @@ const ModelViewer = () => {
           left: '0',
           backgroundColor: 'rgba(0, 0, 0, 0.7)',
           color: 'white',
-          padding: '5px',
-          fontSize: '12px',
+          padding: isMobile ? '10px' : '5px', // More padding on mobile
+          fontSize: isMobile ? '14px' : '12px', // Larger text on mobile
           maxWidth: '100%',
-          maxHeight: '40%',
+          maxHeight: isMobile ? '50%' : '40%', // More space on mobile
           overflowY: 'auto',
           whiteSpace: 'pre-line',
-          fontFamily: 'Oswald, sans-serif'
+          fontFamily: 'Oswald, sans-serif',
+          zIndex: 8
         }}>
           {debugInfo}
         </div>
