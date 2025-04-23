@@ -16,7 +16,7 @@ import base64
 import io
 import uuid
 from datetime import datetime
-# Import viewer utilities
+# Import modules
 import viewer_utils
 from viewer_utils import (
     get_file_extension, 
@@ -25,6 +25,7 @@ from viewer_utils import (
     get_telegram_parameters,
     generate_threejs_viewer_html
 )
+from error_utils import log_error, api_error
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,85 +48,8 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # Base URL for public-facing URLs (use environment variable or default to localhost)
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
 
-# Error handling utility functions
-
-def log_error(error, context=""):
-    """Standardized error logging function"""
-    import traceback
-    error_type = type(error).__name__
-    error_msg = str(error)
-    error_trace = traceback.format_exc()
-    
-    # Always log to console
-    print(f"❌ ERROR [{error_type}] {context}: {error_msg}")
-    if error_trace:
-        print(f"Stack trace:\n{error_trace}")
-    
-    return {
-        "type": error_type,
-        "message": error_msg,
-        "trace": error_trace,
-        "context": context
-    }
-
-def api_error(error, status_code=500, context=""):
-    """Standardized API error response generator"""
-    error_details = log_error(error, context)
-    
-    # Only include stack trace in development environment
-    if os.getenv('FLASK_ENV') != 'development':
-        error_details.pop('trace', None)
-    
-    return jsonify({
-        "error": error_details['type'],
-        "message": error_details['message'],
-        "context": context,
-        "status": "error",
-        "path": request.path,
-        "method": request.method
-    }), status_code
-
-def db_transaction(func):
-    """
-    Decorator for database transactions that handles connection errors,
-    commits on success, and rolls back on exception
-    """
-    def wrapper(*args, **kwargs):
-        if not ensure_db_connection():
-            return jsonify({"error": "Database unavailable", "status": "error"}), 503
-        
-        try:
-            # Reset any previous transaction state
-            conn.rollback()
-            
-            # Execute the function
-            result = func(*args, **kwargs)
-            
-            # Commit if no exception occurred
-            conn.commit()
-            return result
-        except psycopg2.Error as db_error:
-            # Rollback on database errors
-            try:
-                conn.rollback()
-            except:
-                pass
-            
-            # Log and return standardized error response
-            return api_error(db_error, 500, f"Database error in {func.__name__}")
-        except Exception as e:
-            # Rollback on any other exception
-            try:
-                conn.rollback()
-            except:
-                pass
-            
-            # Log and return standardized error response
-            return api_error(e, 500, f"Error in {func.__name__}")
-    
-    # Preserve the function's metadata
-    wrapper.__name__ = func.__name__
-    return wrapper
+# Import the db_transaction factory after defining conn and cursor
+from error_utils import db_transaction as create_db_transaction
 
 # Extract host from DATABASE_URL to resolve to IPv4 address
 if DATABASE_URL:
@@ -191,6 +115,48 @@ except psycopg2.OperationalError as e:
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN else ""
+
+# Create database transaction decorator using the factory
+def ensure_db_connection():
+    """Ensure database connection is active, reconnect if needed."""
+    global conn, cursor, DATABASE_URL
+    
+    try:
+        # Check if connection is closed or cursor is None
+        if conn is None or cursor is None or conn.closed:
+            print("Database connection lost, reconnecting...")
+            # Reconnect to database
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cursor = conn.cursor()
+            print("Successfully reconnected to database")
+        
+        # Test connection with a simple query
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        return True
+    except Exception as e:
+        print(f"Failed to ensure database connection: {e}")
+        try:
+            # If connection exists but is broken, close it to avoid leaks
+            if conn and not conn.closed:
+                conn.close()
+        except:
+            pass
+        
+        try:
+            # Attempt to reconnect one more time
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cursor = conn.cursor()
+            print("Successfully reconnected to database after error")
+            return True
+        except Exception as reconnect_error:
+            print(f"Failed to reconnect to database: {reconnect_error}")
+            conn = None
+            cursor = None
+            return False
+
+# Create the db_transaction decorator after defining ensure_db_connection
+db_transaction = create_db_transaction(conn, cursor, ensure_db_connection)
 
 def check_telegram_auth(data):
     check_hash = data.pop('hash')
@@ -1672,44 +1638,6 @@ def handle_500(e):
         "method": request.method,
         "status": "error"
     }), 500
-
-def ensure_db_connection():
-    """Ensure database connection is active, reconnect if needed."""
-    global conn, cursor, DATABASE_URL
-    
-    try:
-        # Check if connection is closed or cursor is None
-        if conn is None or cursor is None or conn.closed:
-            print("Database connection lost, reconnecting...")
-            # Reconnect to database
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-            cursor = conn.cursor()
-            print("Successfully reconnected to database")
-        
-        # Test connection with a simple query
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        return True
-    except Exception as e:
-        print(f"Failed to ensure database connection: {e}")
-        try:
-            # If connection exists but is broken, close it to avoid leaks
-            if conn and not conn.closed:
-                conn.close()
-        except:
-            pass
-        
-        try:
-            # Attempt to reconnect one more time
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-            cursor = conn.cursor()
-            print("Successfully reconnected to database after error")
-            return True
-        except Exception as reconnect_error:
-            print(f"Failed to reconnect to database: {reconnect_error}")
-            conn = None
-            cursor = None
-            return False
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
