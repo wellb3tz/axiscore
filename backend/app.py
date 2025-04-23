@@ -190,7 +190,7 @@ def webhook():
                                 [
                                     {
                                         'text': '🌐 Open in Browser',
-                                        'url': f"https://wellb3tz.github.io/axiscore/?model={model_url}"
+                                        'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
                                     }
                                 ]
                             ]
@@ -250,6 +250,10 @@ def view_model():
     
     # Get file extension for the model
     file_extension = get_file_extension(model_url)
+    
+    # Ensure model_url is an absolute URL
+    if not model_url.startswith('http'):
+        model_url = f"{BASE_URL}{model_url}"
     
     # Redirect to GitHub Pages
     github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
@@ -465,6 +469,9 @@ def miniapp():
     # If direct model_url is provided, redirect to GitHub Pages
     if model_url:
         print(f"Redirecting to GitHub Pages with model URL: {model_url}")
+        # Ensure model_url is an absolute URL
+        if not model_url.startswith('http'):
+            model_url = f"{BASE_URL}{model_url}"
         # Create the full GitHub Pages URL with the model parameter
         github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
         return redirect(github_url)
@@ -489,6 +496,10 @@ def miniapp():
                     # Store the file extension for possible use later
                     if '.' in model_name:
                         file_extension = os.path.splitext(model_name)[1].lower()
+                    
+                    # Ensure model_url is an absolute URL
+                    if not model_url.startswith('http'):
+                        model_url = f"{BASE_URL}{model_url}"
                     
                     # Redirect to GitHub Pages with the found model URL
                     github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
