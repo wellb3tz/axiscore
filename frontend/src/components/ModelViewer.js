@@ -22,6 +22,7 @@ const ModelViewer = () => {
   const [modelError, setModelError] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
   const [showDebug, setShowDebug] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
   
   // State to track model loading
   const [loadingProgress, setLoadingProgress] = useState(0);
@@ -35,10 +36,35 @@ const ModelViewer = () => {
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
   const modelRef = useRef(null);
+  const animationIdRef = useRef(null);
 
   // Detect Telegram environment
   const isTelegramMode = location.pathname.includes('miniapp') || 
                          (typeof window !== 'undefined' && window.Telegram?.WebApp);
+
+  // Add Oswald font
+  useEffect(() => {
+    // Create a link element for Google Fonts
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600;700&display=swap';
+    document.head.appendChild(link);
+    
+    // Set Oswald as the font for the whole app
+    const style = document.createElement('style');
+    style.textContent = `
+      .model-viewer-container, .model-viewer-container * {
+        font-family: 'Oswald', sans-serif !important;
+      }
+    `;
+    document.head.appendChild(style);
+    
+    // Clean up on unmount
+    return () => {
+      document.head.removeChild(link);
+      document.head.removeChild(style);
+    };
+  }, []);
 
   // Step 1: Fetch model data from the API or use direct params
   useEffect(() => {
@@ -205,14 +231,6 @@ const ModelViewer = () => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
     
-    // Add a grid to help with orientation
-    const gridHelper = new THREE.GridHelper(20, 20, 0x888888, 0x444444);
-    scene.add(gridHelper);
-    
-    // Add axes helper for orientation
-    const axesHelper = new THREE.AxesHelper(5);
-    scene.add(axesHelper);
-    
     sceneRef.current = scene;
 
     // Camera
@@ -356,88 +374,137 @@ const ModelViewer = () => {
       }
     };
 
+    // Standardized model processing function to ensure consistent behavior across different loaders
+    const processLoadedModel = (object) => {
+      setModelLoading(false);
+      addDebugInfo('Model loaded successfully');
+
+      // Handle different loader results
+      let model;
+      if (object.scene) {
+        // GLTF/GLB result
+        model = object.scene;
+      } else {
+        // FBX/OBJ result
+        model = object;
+      }
+      
+      // Store the model for later access
+      modelRef.current = model;
+
+      // Apply standard processing to all model types
+      model.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          
+          // Ensure materials are properly configured
+          if (child.material) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach(material => {
+                material.side = THREE.DoubleSide;
+              });
+            } else {
+              child.material.side = THREE.DoubleSide;
+            }
+          }
+        }
+      });
+
+      // Detect if this is an FBX model
+      const isFbx = object.constructor.name === 'Group' && 
+                    detectedExtension === 'fbx';
+      
+      // Special handling for FBX models
+      if (isFbx) {
+        addDebugInfo('Applying special normalization for FBX model');
+        
+        // Reset model rotation (FBX often comes with different default orientation)
+        model.rotation.set(0, 0, 0);
+        
+        // Reset model position
+        model.position.set(0, 0, 0);
+      }
+
+      // Center model and normalize size
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      
+      addDebugInfo(`Raw model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+      addDebugInfo(`Center position: ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}`);
+
+      // Reset model position and rotation for consistency
+      model.position.set(-center.x, -center.y, -center.z);
+      model.rotation.set(0, 0, 0);
+      
+      // Standard scale calculation for consistent size
+      const maxDim = Math.max(size.x, size.y, size.z);
+      let scale = 5 / maxDim; // Normalize to a standard size
+      
+      // Apply different scaling for different model types
+      if (isFbx) {
+        // FBX models often need different scaling
+        if (maxDim > 100) {
+          scale = 5 / maxDim;
+        } else if (maxDim < 1) {
+          scale = 5;
+        } else {
+          scale = 5 / maxDim;
+        }
+        model.scale.set(scale, scale, scale);
+        addDebugInfo(`Applied FBX scaling: ${scale.toFixed(4)}`);
+      } else if (maxDim > 10 || maxDim < 0.1) {
+        // For GLB and OBJ, only scale if too large or too small
+        model.scale.set(scale, scale, scale);
+        addDebugInfo(`Applied general scaling: ${scale.toFixed(4)}`);
+      }
+      
+      // After scaling, recalculate the bounding box
+      const scaledBox = new THREE.Box3().setFromObject(model);
+      const scaledSize = scaledBox.getSize(new THREE.Vector3());
+      addDebugInfo(`Scaled model dimensions: ${scaledSize.x.toFixed(2)} x ${scaledSize.y.toFixed(2)} x ${scaledSize.z.toFixed(2)}`);
+
+      // Place camera at a standardized position based on model bounds
+      const fov = camera.fov * (Math.PI / 180);
+      const cameraDistance = Math.max(
+        scaledSize.x,
+        scaledSize.y,
+        scaledSize.z
+      ) / (2 * Math.tan(fov / 2));
+      
+      // Adjust camera position based on model type for consistency
+      const cameraZ = cameraDistance * 1.5; // Add some padding
+      
+      // Set camera to a consistent position for all model types
+      camera.position.set(cameraZ, cameraZ, cameraZ);
+      camera.lookAt(new THREE.Vector3(0, 0, 0));
+      addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}`);
+      
+      // Set control target to center of model
+      controls.target.set(0, 0, 0);
+      controls.update();
+      
+      addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+      
+      scene.add(model);
+      
+      // Stop auto-rotate after 5 seconds
+      setTimeout(() => {
+        if (controlsRef.current) {
+          controlsRef.current.autoRotate = false;
+        }
+      }, 5000);
+      
+      // We're removing the Telegram MainButton that showed "Model Loaded"
+    };
+
     // Load the model
     try {
       loader.load(
         modelUrl,
         // On load success
-        (object) => {
-          setModelLoading(false);
-          addDebugInfo('Model loaded successfully');
-
-          // Handle different loader results
-          let model;
-          if (object.scene) {
-            // GLTF/GLB result
-            model = object.scene;
-          } else {
-            // FBX/OBJ result
-            model = object;
-          }
-          
-          // Store the model for later access
-          modelRef.current = model;
-
-          // Make sure all materials receive shadows
-          model.traverse((child) => {
-            if (child.isMesh) {
-              child.castShadow = true;
-              child.receiveShadow = true;
-              
-              // Ensure materials are properly configured
-              if (child.material) {
-                if (Array.isArray(child.material)) {
-                  child.material.forEach(material => {
-                    material.side = THREE.DoubleSide;
-                  });
-                } else {
-                  child.material.side = THREE.DoubleSide;
-                }
-              }
-            }
-          });
-
-          // Center model
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-
-          model.position.x = -center.x;
-          model.position.y = -center.y;
-          model.position.z = -center.z;
-
-          // Adjust camera position based on model size
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const fov = camera.fov * (Math.PI / 180);
-          const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
-          
-          camera.position.set(cameraZ, cameraZ, cameraZ);
-          camera.lookAt(new THREE.Vector3(0, 0, 0));
-          
-          // Set control target to center of model
-          controls.target.set(0, 0, 0);
-          controls.update();
-          
-          addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
-          
-          scene.add(model);
-          
-          // Stop auto-rotate after 5 seconds
-          setTimeout(() => {
-            if (controlsRef.current) {
-              controlsRef.current.autoRotate = false;
-            }
-          }, 5000);
-          
-          // If in Telegram WebApp, notify it's ready
-          if (isTelegramMode && window.Telegram?.WebApp) {
-            window.Telegram.WebApp.MainButton.setText('Model Loaded');
-            window.Telegram.WebApp.MainButton.show();
-            window.Telegram.WebApp.MainButton.onClick(() => {
-              window.Telegram.WebApp.MainButton.hide();
-            });
-          }
-        },
+        (object) => processLoadedModel(object),
         // On progress
         onProgress,
         // On error
@@ -457,57 +524,7 @@ const ModelViewer = () => {
             const fbxLoader = new FBXLoader();
             fbxLoader.load(
               modelUrl,
-              (object) => {
-                setModelLoading(false);
-                addDebugInfo('Model loaded successfully with FBXLoader fallback');
-                
-                modelRef.current = object;
-                
-                // Apply the same processing as in the success handler
-                object.traverse((child) => {
-                  if (child.isMesh) {
-                    child.castShadow = true;
-                    child.receiveShadow = true;
-                    if (child.material) {
-                      if (Array.isArray(child.material)) {
-                        child.material.forEach(material => {
-                          material.side = THREE.DoubleSide;
-                        });
-                      } else {
-                        child.material.side = THREE.DoubleSide;
-                      }
-                    }
-                  }
-                });
-                
-                // Center model
-                const box = new THREE.Box3().setFromObject(object);
-                const center = box.getCenter(new THREE.Vector3());
-                const size = box.getSize(new THREE.Vector3());
-                
-                object.position.x = -center.x;
-                object.position.y = -center.y;
-                object.position.z = -center.z;
-                
-                // Adjust camera position
-                const maxDim = Math.max(size.x, size.y, size.z);
-                const fov = camera.fov * (Math.PI / 180);
-                const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
-                
-                camera.position.set(cameraZ, cameraZ, cameraZ);
-                camera.lookAt(new THREE.Vector3(0, 0, 0));
-                controls.target.set(0, 0, 0);
-                controls.update();
-                
-                scene.add(object);
-                
-                // Stop auto-rotate after 5 seconds
-                setTimeout(() => {
-                  if (controlsRef.current) {
-                    controlsRef.current.autoRotate = false;
-                  }
-                }, 5000);
-              },
+              (object) => processLoadedModel(object),
               onProgress,
               (fbxError) => {
                 // If FBX loader also fails, try OBJ loader
@@ -516,16 +533,7 @@ const ModelViewer = () => {
                   const objLoader = new OBJLoader();
                   objLoader.load(
                     modelUrl,
-                    (object) => {
-                      // Same processing as above
-                      setModelLoading(false);
-                      addDebugInfo('Model loaded successfully with OBJLoader fallback');
-                      
-                      // Same object processing logic as above
-                      // ...
-                      
-                      scene.add(object);
-                    },
+                    (object) => processLoadedModel(object),
                     onProgress,
                     (objError) => {
                       // Give up if all loaders fail
@@ -548,41 +556,7 @@ const ModelViewer = () => {
             const objLoader = new OBJLoader();
             objLoader.load(
               modelUrl,
-              (object) => {
-                setModelLoading(false);
-                addDebugInfo('Model loaded successfully with OBJLoader fallback');
-                
-                modelRef.current = object;
-                
-                // Apply the same processing as in the success handler
-                // Center model
-                const box = new THREE.Box3().setFromObject(object);
-                const center = box.getCenter(new THREE.Vector3());
-                const size = box.getSize(new THREE.Vector3());
-                
-                object.position.x = -center.x;
-                object.position.y = -center.y;
-                object.position.z = -center.z;
-                
-                // Adjust camera position
-                const maxDim = Math.max(size.x, size.y, size.z);
-                const fov = camera.fov * (Math.PI / 180);
-                const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
-                
-                camera.position.set(cameraZ, cameraZ, cameraZ);
-                camera.lookAt(new THREE.Vector3(0, 0, 0));
-                controls.target.set(0, 0, 0);
-                controls.update();
-                
-                scene.add(object);
-                
-                // Stop auto-rotate after 5 seconds
-                setTimeout(() => {
-                  if (controlsRef.current) {
-                    controlsRef.current.autoRotate = false;
-                  }
-                }, 5000);
-              },
+              (object) => processLoadedModel(object),
               onProgress,
               (objError) => {
                 setModelError(`Failed to load 3D model: ${objError.message}`);
@@ -614,6 +588,8 @@ const ModelViewer = () => {
     // Animation loop
     const animate = () => {
       const animationId = requestAnimationFrame(animate);
+      animationIdRef.current = animationId;
+      
       if (controlsRef.current) {
         controlsRef.current.update();
       }
@@ -623,47 +599,112 @@ const ModelViewer = () => {
       return animationId;
     };
     
-    const animationId = animate();
+    animate();
 
-    // Cleanup function
+    // Cleanup function - Improved unmounting
     return () => {
       window.removeEventListener('resize', handleResize);
-      cancelAnimationFrame(animationId);
+      
+      // Cancel animation frame
+      if (animationIdRef.current) {
+        cancelAnimationFrame(animationIdRef.current);
+        animationIdRef.current = null;
+      }
       
       // Dispose of Three.js resources
       if (sceneRef.current) {
-        sceneRef.current.traverse((object) => {
-          if (object.geometry) {
-            object.geometry.dispose();
-          }
-          
-          if (object.material) {
-            if (Array.isArray(object.material)) {
-              object.material.forEach(material => disposeMaterial(material));
-            } else {
-              disposeMaterial(object.material);
-            }
-          }
-        });
+        // Remove all objects from the scene first
+        while (sceneRef.current.children.length > 0) {
+          const object = sceneRef.current.children[0];
+          sceneRef.current.remove(object);
+        }
+        
+        sceneRef.current = null;
       }
       
-      if (rendererRef.current) {
-        if (containerRef.current) {
-          containerRef.current.removeChild(rendererRef.current.domElement);
-        }
-        rendererRef.current.dispose();
+      // Dispose of controls
+      if (controlsRef.current) {
+        controlsRef.current.dispose();
+        controlsRef.current = null;
       }
+      
+      // Dispose of model and its resources
+      if (modelRef.current) {
+        disposeMeshes(modelRef.current);
+        modelRef.current = null;
+      }
+      
+      // Dispose of renderer
+      if (rendererRef.current) {
+        rendererRef.current.dispose();
+        
+        // Remove canvas from DOM
+        if (containerRef.current && rendererRef.current.domElement) {
+          if (containerRef.current.contains(rendererRef.current.domElement)) {
+            containerRef.current.removeChild(rendererRef.current.domElement);
+          }
+        }
+        
+        rendererRef.current = null;
+      }
+      
+      // Clear camera reference
+      cameraRef.current = null;
     };
   }, [modelData, apiLoading, apiError, location, isTelegramMode]);
   
+  // Helper function to dispose of materials and geometries recursively
+  const disposeMeshes = (object) => {
+    if (!object) return;
+    
+    if (object.dispose && typeof object.dispose === 'function') {
+      object.dispose();
+    }
+    
+    if (object.geometry) {
+      object.geometry.dispose();
+    }
+    
+    if (object.material) {
+      if (Array.isArray(object.material)) {
+        object.material.forEach(disposeMaterial);
+      } else {
+        disposeMaterial(object.material);
+      }
+    }
+    
+    if (object.children) {
+      for (let i = 0; i < object.children.length; i++) {
+        disposeMeshes(object.children[i]);
+      }
+    }
+  };
+  
   // Helper function to dispose of materials
   const disposeMaterial = (material) => {
+    if (!material) return;
+    
+    // Dispose of all material properties
+    Object.keys(material).forEach(prop => {
+      if (material[prop] && material[prop].isTexture) {
+        material[prop].dispose();
+      }
+    });
+    
+    // Common texture properties
     if (material.map) material.map.dispose();
     if (material.lightMap) material.lightMap.dispose();
     if (material.bumpMap) material.bumpMap.dispose();
     if (material.normalMap) material.normalMap.dispose();
     if (material.specularMap) material.specularMap.dispose();
     if (material.envMap) material.envMap.dispose();
+    if (material.emissiveMap) material.emissiveMap.dispose();
+    if (material.roughnessMap) material.roughnessMap.dispose();
+    if (material.metalnessMap) material.metalnessMap.dispose();
+    if (material.alphaMap) material.alphaMap.dispose();
+    if (material.aoMap) material.aoMap.dispose();
+    if (material.displacementMap) material.displacementMap.dispose();
+    
     material.dispose();
   };
 
@@ -704,16 +745,30 @@ const ModelViewer = () => {
     }
   };
 
+  // Shared button style
+  const buttonStyle = {
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    padding: '8px 16px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontFamily: 'Oswald, sans-serif',
+    fontSize: '14px'
+  };
+
   // Handle API loading state
   if (apiLoading) {
     return (
-      <div className="loading-container" style={{
+      <div className="loading-container model-viewer-container" style={{
         width: '100%', 
         height: '100vh',
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontSize: '18px'
+        fontSize: '18px',
+        fontFamily: 'Oswald, sans-serif'
       }}>
         Loading model data...
       </div>
@@ -723,7 +778,7 @@ const ModelViewer = () => {
   // Handle API error state
   if (apiError) {
     return (
-      <div className="error-container" style={{
+      <div className="error-container model-viewer-container" style={{
         width: '100%', 
         height: '100vh',
         display: 'flex',
@@ -732,7 +787,8 @@ const ModelViewer = () => {
         alignItems: 'center',
         color: 'red',
         fontSize: '18px',
-        padding: '20px'
+        padding: '20px',
+        fontFamily: 'Oswald, sans-serif'
       }}>
         <div>Error: {apiError}</div>
         {isTelegramMode ? (
@@ -763,13 +819,14 @@ const ModelViewer = () => {
   // Handle missing model data
   if (!modelData) {
     return (
-      <div className="no-data-container" style={{
+      <div className="no-data-container model-viewer-container" style={{
         width: '100%', 
         height: '100vh',
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontSize: '18px'
+        fontSize: '18px',
+        fontFamily: 'Oswald, sans-serif'
       }}>
         No model data available
       </div>
@@ -782,79 +839,58 @@ const ModelViewer = () => {
       height: '100vh', 
       position: 'relative',
       backgroundColor: '#f0f0f0',
-      overflow: 'hidden'
+      overflow: 'hidden',
+      fontFamily: 'Oswald, sans-serif'
     }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       
-      {/* Camera controls */}
-      <div className="camera-controls" style={{
+      {/* Info button - now in the top left */}
+      <div style={{
         position: 'absolute',
-        bottom: '20px',
-        right: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px'
+        top: '20px',
+        left: '20px'
       }}>
         <button 
-          onClick={resetCamera}
-          style={{
-            backgroundColor: '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            padding: '8px 16px',
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
+          onClick={() => setShowInfo(!showInfo)}
+          style={buttonStyle}
         >
-          Reset View
+          {showInfo ? 'Hide Info' : 'Show Info'}
         </button>
-        <button 
-          onClick={toggleRotation}
-          style={{
-            backgroundColor: '#28a745',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            padding: '8px 16px',
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
-        >
-          Toggle Rotation
-        </button>
+      </div>
+      
+      {/* Debug button - now in the top right */}
+      <div style={{
+        position: 'absolute',
+        top: '20px',
+        right: '20px'
+      }}>
         <button 
           onClick={() => setShowDebug(!showDebug)}
-          style={{
-            backgroundColor: '#6c757d',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            padding: '8px 16px',
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
+          style={buttonStyle}
         >
           {showDebug ? 'Hide Debug' : 'Show Debug'}
         </button>
       </div>
       
-      {/* Model info */}
-      <div className="model-info" style={{
-        position: 'absolute',
-        top: '10px',
-        left: '10px',
-        backgroundColor: 'rgba(0,0,0,0.6)',
-        color: 'white',
-        padding: '10px',
-        borderRadius: '4px',
-        maxWidth: '300px',
-        fontSize: '14px'
-      }}>
-        <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
-        <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
-        {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
-      </div>
+      {/* Model info - shown when info button is clicked */}
+      {showInfo && (
+        <div className="model-info" style={{
+          position: 'absolute',
+          top: '70px',
+          left: '20px',
+          backgroundColor: 'rgba(0,0,0,0.6)',
+          color: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          maxWidth: '300px',
+          fontSize: '14px',
+          fontFamily: 'Oswald, sans-serif'
+        }}>
+          <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
+          <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
+          {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
+        </div>
+      )}
       
       {modelLoading && (
         <div className="loading" style={{
@@ -867,7 +903,8 @@ const ModelViewer = () => {
           backgroundColor: 'rgba(0, 0, 0, 0.7)',
           padding: '20px',
           borderRadius: '10px',
-          textAlign: 'center'
+          textAlign: 'center',
+          fontFamily: 'Oswald, sans-serif'
         }}>
           <div>Loading model...</div>
           <div style={{ marginTop: '10px' }}>{loadingProgress}%</div>
@@ -900,7 +937,8 @@ const ModelViewer = () => {
           padding: '20px',
           borderRadius: '10px',
           textAlign: 'center',
-          maxWidth: '80%'
+          maxWidth: '80%',
+          fontFamily: 'Oswald, sans-serif'
         }}>
           {modelError}
         </div>
@@ -918,28 +956,12 @@ const ModelViewer = () => {
           maxWidth: '100%',
           maxHeight: '40%',
           overflowY: 'auto',
-          whiteSpace: 'pre-line'
+          whiteSpace: 'pre-line',
+          fontFamily: 'Oswald, sans-serif'
         }}>
           {debugInfo}
         </div>
       )}
-      
-      {/* Help text */}
-      <div className="help-text" style={{
-        position: 'absolute',
-        bottom: '20px',
-        left: '20px',
-        backgroundColor: 'rgba(0,0,0,0.6)',
-        color: 'white',
-        padding: '10px',
-        borderRadius: '4px',
-        maxWidth: '300px',
-        fontSize: '12px'
-      }}>
-        <div>Left click + drag: Rotate</div>
-        <div>Right click + drag: Pan</div>
-        <div>Scroll: Zoom</div>
-      </div>
     </div>
   );
 };
