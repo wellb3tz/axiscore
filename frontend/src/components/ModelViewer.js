@@ -33,27 +33,38 @@ const ModelViewer = () => {
   const controlsRef = useRef(null);
   const modelRef = useRef(null);
 
+  // Detect Telegram environment
+  const isTelegramMode = location.pathname.includes('miniapp') || 
+                         (typeof window !== 'undefined' && window.Telegram?.WebApp);
+
   // Step 1: Fetch model data from the API or use direct params
   useEffect(() => {
     const fetchModelData = async () => {
       try {
+        addDebugInfo(`App initialized`);
+        
         // Get parameters from URL
         const params = new URLSearchParams(location.search);
         const modelParam = params.get('model');
         const uuidParam = params.get('uuid');
         const extParam = params.get('ext') || '.glb'; // Default to .glb if not specified
         
-        // Check if we're on GitHub Pages or another static host
-        const isGitHubPages = window.location.hostname.includes('github.io');
-        const isStaticHost = isGitHubPages || window.location.hostname.includes('netlify') || 
-                             window.location.hostname.includes('vercel');
+        // Initialize Telegram WebApp if available
+        let telegramStartParam = null;
         
-        addDebugInfo(`Detected environment: ${isGitHubPages ? 'GitHub Pages' : 
-                     (isStaticHost ? 'Static hosting' : 'Normal mode')}`);
-
-        // If we're on a static host and have a direct model URL, use it directly
-        if ((isStaticHost || modelParam) && modelParam) {
-          addDebugInfo(`Using direct model URL: ${modelParam}`);
+        if (isTelegramMode && window.Telegram?.WebApp) {
+          const webApp = window.Telegram.WebApp;
+          webApp.ready();
+          webApp.expand();
+          
+          // Extract parameters from Telegram
+          telegramStartParam = webApp.initDataUnsafe?.start_param;
+          addDebugInfo(`Telegram WebApp detected! Start param: ${telegramStartParam || 'none'}`);
+        }
+        
+        // Use direct model parameter if available (highest priority)
+        if (modelParam) {
+          addDebugInfo(`Using direct model URL from parameter: ${modelParam}`);
           setModelData({
             model_url: modelParam,
             file_extension: extParam,
@@ -64,47 +75,104 @@ const ModelViewer = () => {
           setApiLoading(false);
           return;
         }
-
-        // Normal API flow
-        let apiEndpoint = '/viewer'; // Default to viewer endpoint
-
+        
+        // Use Telegram start_param as UUID if available (second priority)
+        if (telegramStartParam && telegramStartParam.includes('-')) {
+          // Determine API endpoint based on path
+          let apiEndpoint = '/miniapp';
+          if (location.pathname.includes('view')) {
+            apiEndpoint = '/view';
+          }
+          
+          // Add UUID parameter
+          apiEndpoint += `?uuid=${telegramStartParam}`;
+          if (extParam !== '.glb') {
+            apiEndpoint += `&ext=${extParam}`;
+          }
+          
+          addDebugInfo(`Fetching model data with Telegram UUID: ${telegramStartParam}`);
+          addDebugInfo(`API endpoint: ${apiEndpoint}`);
+          
+          // Fetch from API with the UUID
+          const response = await fetch(apiEndpoint);
+          if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+          }
+          
+          const data = await response.json();
+          setModelData(data);
+          addDebugInfo(`Model data received from API: ${JSON.stringify(data)}`);
+          setApiLoading(false);
+          return;
+        }
+        
+        // Use UUID parameter directly with API (third priority)
+        if (uuidParam) {
+          // Determine API endpoint based on path
+          let apiEndpoint = '/viewer';
+          if (location.pathname.includes('miniapp')) {
+            apiEndpoint = '/miniapp';
+          } else if (location.pathname.includes('view')) {
+            apiEndpoint = '/view';
+          }
+          
+          // Add parameters
+          apiEndpoint += `?uuid=${uuidParam}`;
+          if (extParam !== '.glb') {
+            apiEndpoint += `&ext=${extParam}`;
+          }
+          
+          addDebugInfo(`Fetching model data with UUID parameter: ${uuidParam}`);
+          addDebugInfo(`API endpoint: ${apiEndpoint}`);
+          
+          // Fetch from API
+          const response = await fetch(apiEndpoint);
+          if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+          }
+          
+          const data = await response.json();
+          setModelData(data);
+          addDebugInfo(`Model data received from API: ${JSON.stringify(data)}`);
+          setApiLoading(false);
+          return;
+        }
+        
+        // No parameters available, try default API endpoint (lowest priority)
+        let apiEndpoint = '/viewer';
         if (location.pathname.includes('miniapp')) {
           apiEndpoint = '/miniapp';
         } else if (location.pathname.includes('view')) {
           apiEndpoint = '/view';
         }
-
-        // Add any parameters to the request
-        if (modelParam || uuidParam) {
-          const queryParams = new URLSearchParams();
-          if (modelParam) queryParams.append('model', modelParam);
-          if (uuidParam) queryParams.append('uuid', uuidParam);
-          if (extParam) queryParams.append('ext', extParam);
-          apiEndpoint += `?${queryParams.toString()}`;
-        }
-
-        addDebugInfo(`Fetching model data from: ${apiEndpoint}`);
-
-        // Fetch data from backend API
+        
+        addDebugInfo(`No parameters found, trying default endpoint: ${apiEndpoint}`);
+        
+        // Fetch from default API endpoint
         const response = await fetch(apiEndpoint);
         if (!response.ok) {
           throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
         }
-
+        
         const data = await response.json();
         setModelData(data);
-        addDebugInfo(`Model data received: ${JSON.stringify(data)}`);
+        addDebugInfo(`Model data received from default API: ${JSON.stringify(data)}`);
       } catch (err) {
         console.error('Error fetching model data:', err);
         setApiError(err.message);
         addDebugInfo(`API Error: ${err.message}`);
+        
+        // If on Telegram without model data, show specific error
+        if (isTelegramMode) {
+          setApiError(`Could not load model from Telegram. Please try uploading the file again.`);
+        }
       } finally {
         setApiLoading(false);
       }
     };
 
     fetchModelData();
-  }, [location]);
+  }, [location, isTelegramMode]);
 
   // Step 2: Initialize and render the 3D model
   useEffect(() => {
@@ -112,32 +180,16 @@ const ModelViewer = () => {
 
     const { model_url, file_extension, base_url, uuid } = modelData;
     let modelUrl = model_url;
-    const isTelegramMode = location.pathname.includes('miniapp') || (typeof window !== 'undefined' && window.Telegram?.WebApp);
     const baseUrl = base_url || window.location.origin;
-
-    // Initialize Telegram WebApp if needed
-    if (isTelegramMode && window.Telegram?.WebApp) {
-      const webApp = window.Telegram.WebApp;
-      webApp.ready();
-      webApp.expand();
-
-      // Extract parameters from Telegram if needed
-      const startParam = webApp.initDataUnsafe?.start_param;
-      addDebugInfo(`Telegram WebApp detected! Start param: ${startParam || 'none'}`);
-
-      // If no model URL is provided but we have a start param that might be a UUID, 
-      // construct a model URL
-      if ((!modelUrl || modelUrl === '') && startParam && startParam.includes('-')) {
-        modelUrl = `${baseUrl}/models/${startParam}/model${file_extension}`;
-        addDebugInfo(`Using model from Telegram parameter: ${modelUrl}`);
-      }
-    }
 
     if (!modelUrl) {
       setModelError('No model URL provided. Please provide a valid 3D model URL.');
       setModelLoading(false);
       return;
     }
+
+    // Log the final model URL we're using
+    addDebugInfo(`Final model URL to load: ${modelUrl}`);
 
     // Initialize Three.js scene
     const container = containerRef.current;
@@ -242,9 +294,6 @@ const ModelViewer = () => {
         loader = new GLTFLoader();
         break;
     }
-
-    // Add CORS headers for debugging
-    addDebugInfo(`Added CORS debugging headers`);
     
     const onProgress = (xhr) => {
       if (xhr.lengthComputable) {
@@ -326,6 +375,15 @@ const ModelViewer = () => {
               controlsRef.current.autoRotate = false;
             }
           }, 5000);
+          
+          // If in Telegram WebApp, notify it's ready
+          if (isTelegramMode && window.Telegram?.WebApp) {
+            window.Telegram.WebApp.MainButton.setText('Model Loaded');
+            window.Telegram.WebApp.MainButton.show();
+            window.Telegram.WebApp.MainButton.onClick(() => {
+              window.Telegram.WebApp.MainButton.hide();
+            });
+          }
         },
         // On progress
         onProgress,
@@ -393,7 +451,7 @@ const ModelViewer = () => {
         rendererRef.current.dispose();
       }
     };
-  }, [modelData, apiLoading, apiError, location]);
+  }, [modelData, apiLoading, apiError, location, isTelegramMode]);
   
   // Helper function to dispose of materials
   const disposeMaterial = (material) => {
@@ -474,15 +532,27 @@ const ModelViewer = () => {
         padding: '20px'
       }}>
         <div>Error: {apiError}</div>
-        <div style={{ 
-          marginTop: '20px',
-          fontSize: '14px',
-          color: '#666',
-          maxWidth: '600px',
-          textAlign: 'center'
-        }}>
-          To view a model, add a model URL directly in the address bar: <code>?model=https://example.com/your-model.glb</code>
-        </div>
+        {isTelegramMode ? (
+          <div style={{ 
+            marginTop: '20px',
+            fontSize: '14px',
+            color: '#666',
+            maxWidth: '600px',
+            textAlign: 'center'
+          }}>
+            Please try uploading your file again in the Telegram bot.
+          </div>
+        ) : (
+          <div style={{ 
+            marginTop: '20px',
+            fontSize: '14px',
+            color: '#666',
+            maxWidth: '600px',
+            textAlign: 'center'
+          }}>
+            To view a model, add a model URL directly in the address bar: <code>?model=https://example.com/your-model.glb</code>
+          </div>
+        )}
       </div>
     );
   }
