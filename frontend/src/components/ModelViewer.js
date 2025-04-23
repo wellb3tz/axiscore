@@ -25,6 +25,9 @@ const ModelViewer = () => {
   
   // State to track model loading
   const [loadingProgress, setLoadingProgress] = useState(0);
+  
+  // State to track the detected file extension
+  const [detectedExtension, setDetectedExtension] = useState(null);
 
   // Three.js objects
   const sceneRef = useRef(null);
@@ -281,26 +284,32 @@ const ModelViewer = () => {
     if (file_extension) {
       // Get from API response if available
       extension = file_extension.toLowerCase().replace('.', '');
+      setDetectedExtension(extension);
       addDebugInfo(`Using file extension from API response: ${extension}`);
     } else if (modelUrl) {
       // Try to extract from URL
       const urlExtension = modelUrl.split('.').pop().toLowerCase();
       if (urlExtension && ['glb', 'gltf', 'fbx', 'obj'].includes(urlExtension)) {
         extension = urlExtension;
+        setDetectedExtension(extension);
         addDebugInfo(`Extracted file extension from URL: ${extension}`);
       } else {
         // Check URL for extension indicators
         if (modelUrl.includes('fbx')) {
           extension = 'fbx';
+          setDetectedExtension('fbx');
           addDebugInfo(`Detected FBX model from URL pattern`);
         } else if (modelUrl.includes('obj')) {
           extension = 'obj';
+          setDetectedExtension('obj');
           addDebugInfo(`Detected OBJ model from URL pattern`);
         } else if (modelUrl.includes('gltf')) {
           extension = 'gltf';
+          setDetectedExtension('gltf');
           addDebugInfo(`Detected GLTF model from URL pattern`);
         } else if (modelUrl.includes('glb')) {
           extension = 'glb';
+          setDetectedExtension('glb');
           addDebugInfo(`Detected GLB model from URL pattern`);
         }
       }
@@ -444,6 +453,7 @@ const ModelViewer = () => {
           if (isJsonError && extension === 'glb' && modelUrl.includes('.fbx')) {
             // Try FBX loader as fallback
             addDebugInfo('JSON parse error detected. Trying FBXLoader as fallback...');
+            setDetectedExtension('fbx');
             const fbxLoader = new FBXLoader();
             fbxLoader.load(
               modelUrl,
@@ -534,6 +544,7 @@ const ModelViewer = () => {
           } else if (isJsonError && extension === 'glb' && (modelUrl.includes('.obj') || modelUrl.toLowerCase().includes('obj'))) {
             // Try OBJ loader as fallback
             addDebugInfo('JSON parse error detected. Trying OBJLoader as fallback...');
+            setDetectedExtension('obj');
             const objLoader = new OBJLoader();
             objLoader.load(
               modelUrl,
@@ -841,7 +852,7 @@ const ModelViewer = () => {
         fontSize: '14px'
       }}>
         <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
-        <div><strong>Type:</strong> {modelData.file_extension}</div>
+        <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
         {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
       </div>
       
