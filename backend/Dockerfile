@@ -2,8 +2,10 @@
 FROM python:3.9-slim
 
 # Install system dependencies for archive extraction
-RUN apt-get update && apt-get install -y \
-    unrar \
+# Use unrar-free since unrar is non-free and not in main repos
+RUN apt-get update && \
+    apt-get install -y \
+    unrar-free \
     unzip \
     p7zip-full \
     && rm -rf /var/lib/apt/lists/*
@@ -16,6 +18,9 @@ COPY requirements.txt .
 
 # Install the dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Python packages for RAR handling (as backup for unrar-free limitations)
+RUN pip install --no-cache-dir patool rarfile py7zr
 
 # Copy the rest of the application code into the container
 COPY . .
