@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify, send_file, send_from_directory, make_response
+from flask import Flask, request, jsonify, send_file, send_from_directory, make_response, redirect
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import requests
 import hashlib
@@ -190,7 +190,7 @@ def webhook():
                                 [
                                     {
                                         'text': '🌐 Open in Browser',
-                                        'url': model_direct_url
+                                        'url': f"https://wellb3tz.github.io/axiscore/?model={model_url}"
                                     }
                                 ]
                             ]
@@ -250,15 +250,10 @@ def view_model():
     
     # Get file extension for the model
     file_extension = get_file_extension(model_url)
-    extension_type = file_extension.lower().replace('.', '')
     
-    # Return model info as JSON for the frontend to render
-    return jsonify({
-        "model_url": model_url,
-        "file_extension": file_extension,
-        "extension_type": extension_type,
-        "status": "success"
-    })
+    # Redirect to GitHub Pages
+    github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
+    return redirect(github_url)
 
 @app.route('/models', methods=['GET'])
 @jwt_required()
@@ -467,6 +462,13 @@ def miniapp():
     # Get parameters and model URL using our utility function
     model_url, uuid_param, file_extension = get_telegram_parameters(request)
     
+    # If direct model_url is provided, redirect to GitHub Pages
+    if model_url:
+        print(f"Redirecting to GitHub Pages with model URL: {model_url}")
+        # Create the full GitHub Pages URL with the model parameter
+        github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
+        return redirect(github_url)
+    
     # If we have a UUID directly (from Telegram), search for the model in database
     if uuid_param and not model_url:
         print(f"Received UUID parameter: {uuid_param}")
@@ -487,6 +489,10 @@ def miniapp():
                     # Store the file extension for possible use later
                     if '.' in model_name:
                         file_extension = os.path.splitext(model_name)[1].lower()
+                    
+                    # Redirect to GitHub Pages with the found model URL
+                    github_url = f"https://wellb3tz.github.io/axiscore/?model={model_url}"
+                    return redirect(github_url)
                 else:
                     print(f"No model found for UUID: {uuid_param}")
             except Exception as e:
