@@ -21,12 +21,17 @@ const ModelViewer = () => {
   const [modelLoading, setModelLoading] = useState(true);
   const [modelError, setModelError] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
+  const [showDebug, setShowDebug] = useState(false);
+  
+  // State to track model loading
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
   // Three.js objects
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
+  const modelRef = useRef(null);
 
   // Step 1: Fetch model data from the API
   useEffect(() => {
@@ -120,39 +125,74 @@ const ModelViewer = () => {
     // Scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
+    
+    // Add a grid to help with orientation
+    const gridHelper = new THREE.GridHelper(20, 20, 0x888888, 0x444444);
+    scene.add(gridHelper);
+    
+    // Add axes helper for orientation
+    const axesHelper = new THREE.AxesHelper(5);
+    scene.add(axesHelper);
+    
     sceneRef.current = scene;
 
     // Camera
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-    camera.position.z = 5;
+    camera.position.set(5, 5, 5); // Position camera at an angle for better initial view
     cameraRef.current = camera;
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
     // Lighting
+    // Ambient light for general illumination
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(1, 1, 1);
+    // Directional light with shadows
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 7);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
     scene.add(directionalLight);
+    
+    // Add a hemisphere light for more natural lighting
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    hemiLight.position.set(0, 20, 0);
+    scene.add(hemiLight);
 
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.enableZoom = true;
+    controls.enablePan = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+    controls.target.set(0, 0, 0);
+    controls.update();
     controlsRef.current = controls;
 
     // Handle window resize
     const handleResize = () => {
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
+      if (!containerRef.current) return;
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+      
+      if (cameraRef.current) {
+        cameraRef.current.aspect = width / height;
+        cameraRef.current.updateProjectionMatrix();
+      }
+      
+      if (rendererRef.current) {
+        rendererRef.current.setSize(width, height);
+      }
     };
 
     window.addEventListener('resize', handleResize);
@@ -179,6 +219,17 @@ const ModelViewer = () => {
         break;
     }
 
+    // Add CORS headers for debugging
+    addDebugInfo(`Added CORS debugging headers`);
+    
+    const onProgress = (xhr) => {
+      if (xhr.lengthComputable) {
+        const percentComplete = (xhr.loaded / xhr.total) * 100;
+        setLoadingProgress(Math.round(percentComplete));
+        addDebugInfo(`Loading: ${Math.round(percentComplete)}%`);
+      }
+    };
+
     // Load the model
     try {
       loader.load(
@@ -197,6 +248,28 @@ const ModelViewer = () => {
             // FBX/OBJ result
             model = object;
           }
+          
+          // Store the model for later access
+          modelRef.current = model;
+
+          // Make sure all materials receive shadows
+          model.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+              
+              // Ensure materials are properly configured
+              if (child.material) {
+                if (Array.isArray(child.material)) {
+                  child.material.forEach(material => {
+                    material.side = THREE.DoubleSide;
+                  });
+                } else {
+                  child.material.side = THREE.DoubleSide;
+                }
+              }
+            }
+          });
 
           // Center model
           const box = new THREE.Box3().setFromObject(model);
@@ -209,18 +282,29 @@ const ModelViewer = () => {
 
           // Adjust camera position based on model size
           const maxDim = Math.max(size.x, size.y, size.z);
-          camera.position.z = maxDim * 2;
-          camera.updateProjectionMatrix();
-
+          const fov = camera.fov * (Math.PI / 180);
+          const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
+          
+          camera.position.set(cameraZ, cameraZ, cameraZ);
+          camera.lookAt(new THREE.Vector3(0, 0, 0));
+          
+          // Set control target to center of model
+          controls.target.set(0, 0, 0);
+          controls.update();
+          
+          addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+          
           scene.add(model);
+          
+          // Stop auto-rotate after 5 seconds
+          setTimeout(() => {
+            if (controlsRef.current) {
+              controlsRef.current.autoRotate = false;
+            }
+          }, 5000);
         },
         // On progress
-        (xhr) => {
-          const percent = xhr.loaded / xhr.total * 100;
-          if (xhr.total > 0) {
-            addDebugInfo(`Loading: ${Math.round(percent)}%`);
-          }
-        },
+        onProgress,
         // On error
         (error) => {
           console.error('Error loading model:', error);
@@ -253,17 +337,79 @@ const ModelViewer = () => {
     return () => {
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationId);
+      
+      // Dispose of Three.js resources
+      if (sceneRef.current) {
+        sceneRef.current.traverse((object) => {
+          if (object.geometry) {
+            object.geometry.dispose();
+          }
+          
+          if (object.material) {
+            if (Array.isArray(object.material)) {
+              object.material.forEach(material => disposeMaterial(material));
+            } else {
+              disposeMaterial(object.material);
+            }
+          }
+        });
+      }
+      
       if (rendererRef.current) {
-        container.removeChild(rendererRef.current.domElement);
+        if (containerRef.current) {
+          containerRef.current.removeChild(rendererRef.current.domElement);
+        }
         rendererRef.current.dispose();
       }
     };
   }, [modelData, apiLoading, apiError, location]);
+  
+  // Helper function to dispose of materials
+  const disposeMaterial = (material) => {
+    if (material.map) material.map.dispose();
+    if (material.lightMap) material.lightMap.dispose();
+    if (material.bumpMap) material.bumpMap.dispose();
+    if (material.normalMap) material.normalMap.dispose();
+    if (material.specularMap) material.specularMap.dispose();
+    if (material.envMap) material.envMap.dispose();
+    material.dispose();
+  };
 
   // Helper to add debug info
   const addDebugInfo = (info) => {
     setDebugInfo(prev => `${prev}\n${info}`);
     console.log(info);
+  };
+  
+  // Function to reset the camera view
+  const resetCamera = () => {
+    if (!cameraRef.current || !controlsRef.current) return;
+    
+    // If we have a model, adjust camera to fit it
+    if (modelRef.current) {
+      const box = new THREE.Box3().setFromObject(modelRef.current);
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fov = cameraRef.current.fov * (Math.PI / 180);
+      const cameraZ = Math.abs(maxDim / (2 * Math.tan(fov / 2)));
+      
+      cameraRef.current.position.set(cameraZ, cameraZ, cameraZ);
+      cameraRef.current.lookAt(new THREE.Vector3(0, 0, 0));
+    } else {
+      // Default position if no model
+      cameraRef.current.position.set(5, 5, 5);
+      cameraRef.current.lookAt(new THREE.Vector3(0, 0, 0));
+    }
+    
+    controlsRef.current.target.set(0, 0, 0);
+    controlsRef.current.update();
+  };
+  
+  // Toggle auto-rotation
+  const toggleRotation = () => {
+    if (controlsRef.current) {
+      controlsRef.current.autoRotate = !controlsRef.current.autoRotate;
+    }
   };
 
   // Handle API loading state
@@ -316,8 +462,84 @@ const ModelViewer = () => {
   }
 
   return (
-    <div className="model-viewer-container" style={{ width: '100%', height: '100vh', position: 'relative' }}>
+    <div className="model-viewer-container" style={{ 
+      width: '100%', 
+      height: '100vh', 
+      position: 'relative',
+      backgroundColor: '#f0f0f0',
+      overflow: 'hidden'
+    }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      
+      {/* Camera controls */}
+      <div className="camera-controls" style={{
+        position: 'absolute',
+        bottom: '20px',
+        right: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px'
+      }}>
+        <button 
+          onClick={resetCamera}
+          style={{
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            padding: '8px 16px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          Reset View
+        </button>
+        <button 
+          onClick={toggleRotation}
+          style={{
+            backgroundColor: '#28a745',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            padding: '8px 16px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          Toggle Rotation
+        </button>
+        <button 
+          onClick={() => setShowDebug(!showDebug)}
+          style={{
+            backgroundColor: '#6c757d',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            padding: '8px 16px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          {showDebug ? 'Hide Debug' : 'Show Debug'}
+        </button>
+      </div>
+      
+      {/* Model info */}
+      <div className="model-info" style={{
+        position: 'absolute',
+        top: '10px',
+        left: '10px',
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        color: 'white',
+        padding: '10px',
+        borderRadius: '4px',
+        maxWidth: '300px',
+        fontSize: '14px'
+      }}>
+        <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
+        <div><strong>Type:</strong> {modelData.file_extension}</div>
+        {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
+      </div>
       
       {modelLoading && (
         <div className="loading" style={{
@@ -332,7 +554,22 @@ const ModelViewer = () => {
           borderRadius: '10px',
           textAlign: 'center'
         }}>
-          Loading model...
+          <div>Loading model...</div>
+          <div style={{ marginTop: '10px' }}>{loadingProgress}%</div>
+          <div style={{ 
+            width: '200px', 
+            height: '6px', 
+            backgroundColor: '#444', 
+            borderRadius: '3px',
+            marginTop: '10px'
+          }}>
+            <div style={{
+              width: `${loadingProgress}%`,
+              height: '100%',
+              backgroundColor: '#4CAF50',
+              borderRadius: '3px'
+            }}></div>
+          </div>
         </div>
       )}
       
@@ -354,7 +591,7 @@ const ModelViewer = () => {
         </div>
       )}
       
-      {debugInfo && (
+      {showDebug && debugInfo && (
         <div className="debug" style={{
           position: 'absolute',
           bottom: '0',
@@ -364,13 +601,30 @@ const ModelViewer = () => {
           padding: '5px',
           fontSize: '12px',
           maxWidth: '100%',
-          maxHeight: '30%',
+          maxHeight: '40%',
           overflowY: 'auto',
           whiteSpace: 'pre-line'
         }}>
           {debugInfo}
         </div>
       )}
+      
+      {/* Help text */}
+      <div className="help-text" style={{
+        position: 'absolute',
+        bottom: '20px',
+        left: '20px',
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        color: 'white',
+        padding: '10px',
+        borderRadius: '4px',
+        maxWidth: '300px',
+        fontSize: '12px'
+      }}>
+        <div>Left click + drag: Rotate</div>
+        <div>Right click + drag: Pan</div>
+        <div>Scroll: Zoom</div>
+      </div>
     </div>
   );
 };
