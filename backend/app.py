@@ -72,6 +72,8 @@ BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
 # Telegram bot token for API calls
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN else ""
+# Admin chat IDs for special commands (comma-separated list)
+ADMIN_CHAT_IDS = os.getenv('ADMIN_CHAT_IDS', '')
 
 # Initialize the database manager
 db = DatabaseManager()
@@ -136,6 +138,18 @@ def webhook():
                     send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                 
+                # Check if file was already processed and failed before
+                failed_archive = db.execute(
+                    "SELECT error FROM failed_archives WHERE file_id = %s",
+                    (file_id,),
+                    fetch='one'
+                )
+                
+                if failed_archive:
+                    print(f"Archive {file_id} previously failed with error: {failed_archive[0]}")
+                    send_message(chat_id, f"This archive couldn't be processed previously. Error: {failed_archive[0]}", TELEGRAM_BOT_TOKEN)
+                    return jsonify({"status": "error", "msg": "Archive previously failed"}), 400
+                
                 # Send a message to inform the user we're processing the archive
                 send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
                 
@@ -165,7 +179,21 @@ def webhook():
                     extract_result = extract_archive(temp_file_path)
                     
                     if not extract_result['success']:
-                        raise Exception(f"Failed to extract archive: {extract_result['error']}")
+                        error_msg = extract_result['error']
+                        # Provide more specific message for encoding issues
+                        user_msg = "Failed to process your archive."
+                        if "utf-8" in error_msg.lower() and "decode" in error_msg.lower():
+                            user_msg = "Your archive contains files with unsupported encoding. Please ensure all filenames use Latin characters (a-z) without special characters."
+                        
+                        # Record failed archive in database to prevent reprocessing loops
+                        db.execute(
+                            "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s)",
+                            (file_id, file_name, error_msg, chat_id)
+                        )
+                        db.commit()
+                        
+                        send_message(chat_id, f"{user_msg} To try again with a different archive, use the /reset command first.", TELEGRAM_BOT_TOKEN)
+                        raise Exception(f"Failed to extract archive: {error_msg}")
                     
                     # Find 3D model files in the extracted directory
                     extract_path = extract_result['extract_path']
@@ -459,7 +487,47 @@ Axiscore 3D Model Viewer Help:
 • I'll create an interactive viewer link for each model
 • Click "Open in Axiscore" to view and interact with your model
 • Use pinch/scroll to zoom, drag to rotate
+• If you're stuck in a processing loop, use /reset command
             """
+        elif text.lower() == '/reset':
+            # Reset failed archives for this user
+            if db.ensure_connection():
+                db.execute(
+                    "DELETE FROM failed_archives WHERE telegram_id = %s",
+                    (chat_id,)
+                )
+                db.commit()
+                response_text = "Reset successful. Any archives that previously failed can now be processed again."
+            else:
+                response_text = "Could not reset due to database connection issues. Please try again later."
+        elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            # Special admin command to initialize the failed_archives table and add problematic files
+            if db.ensure_connection():
+                # Make sure the table exists
+                db.cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS failed_archives (
+                        id SERIAL PRIMARY KEY,
+                        file_id TEXT NOT NULL UNIQUE,
+                        filename TEXT NOT NULL,
+                        error TEXT NOT NULL,
+                        telegram_id TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                db.commit()
+                
+                # Add any known problematic files by file_id - add the 3D Oasis - Skateboards.rar file
+                try:
+                    db.execute(
+                        "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
+                        ("problematic_file_id", "3D Oasis - Skateboards.rar", "utf-8 codec can't decode byte", chat_id)
+                    )
+                    db.commit()
+                    response_text = "Admin cleanup completed. Known problematic files have been added to the block list."
+                except Exception as e:
+                    response_text = f"Admin cleanup encountered an error: {str(e)}"
+            else:
+                response_text = "Could not perform admin cleanup due to database connection issues."
         else:
             # Generic response for other messages
             response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"

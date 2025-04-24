@@ -86,6 +86,18 @@ class DatabaseManager:
                 )
             ''')
             
+            # Create failed_archives table to track failed archive processing
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS failed_archives (
+                    id SERIAL PRIMARY KEY,
+                    file_id TEXT NOT NULL UNIQUE,
+                    filename TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    telegram_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             self.conn.commit()
             print("Successfully connected to database and initialized tables")
             return True
