@@ -12,6 +12,7 @@ RUN apt-get update && \
     unzip \
     gcc \
     python3-dev \
+    git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,7 +23,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Python packages for RAR handling (with more verbose output)
-RUN pip install --no-cache-dir --verbose patoolib rarfile py7zr
+RUN pip install --no-cache-dir --verbose rarfile py7zr || true
+RUN pip install --no-cache-dir --verbose patool || \
+    (git clone https://github.com/wummel/patool.git /tmp/patool && \
+     cd /tmp/patool && \
+     python setup.py install)
 
 # Copy the rest of the application code into the container
 COPY . .

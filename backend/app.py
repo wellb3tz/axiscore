@@ -167,11 +167,32 @@ def webhook():
                     if not extract_result['success']:
                         error_msg = extract_result['error']
                         print(f"Failed to extract archive: {error_msg}")
-                        send_message(chat_id, f"Error processing your archive: Failed to extract archive: {error_msg[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                        # Provide a more detailed error message
+                        error_message = str(error_msg)
+                        if "utf-8" in error_message.lower():
+                            error_message = "The archive contains filenames with special characters that can't be processed. Please rename files to use only standard characters."
+                        elif "req=" in error_message.lower() and "got=" in error_message.lower():
+                            error_message = "The RAR file appears to be corrupted or incomplete. Please try re-downloading it or use a different archive format like ZIP."
+                        elif "failed to extract rar" in error_message.lower():
+                            error_message = "Failed to extract the RAR file. Please try using a different archive format like ZIP, or ensure the RAR file is not password-protected."
+                        elif "unrar command failed" in error_message.lower() or "/usr/bin/unrar" in error_message.lower():
+                            error_message = "Server extraction tool error. Please try uploading a ZIP archive instead of RAR, or try again later."
+                        elif "command " in error_message.lower() and "not found" in error_message.lower():
+                            error_message = "Archive extraction tools are missing on the server. Please try using a ZIP archive or contact support."
+                        elif "all rar extraction methods failed" in error_message.lower():
+                            error_message = "Unable to extract RAR archive. Please use ZIP format instead, which has better compatibility."
+                        elif "all extraction methods failed" in error_message.lower():
+                            error_message = "Unable to extract the archive. Please try a different archive format (preferably ZIP) or check if the archive is corrupted."
+                        elif "file does not exist" in error_message.lower():
+                            error_message = "The archive file could not be found on the server. This may be a temporary issue. Please try again."
+                        elif "file is not readable" in error_message.lower():
+                            error_message = "The archive file could not be read. Please check the file and try again, preferably with a ZIP archive."
+                        
+                        send_message(chat_id, f"Error processing your archive: {error_message[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
                         # Clean up the temporary file
                         if os.path.exists(temp_file_path):
                             os.remove(temp_file_path)
-                        return jsonify({"status": "error", "msg": f"Failed to extract archive: {error_msg}"}), 500
+                        return jsonify({"status": "error", "msg": error_message}), 500
                     
                     # Find 3D model files in the extracted directory
                     extract_path = extract_result['extract_path']
@@ -361,6 +382,10 @@ def webhook():
                         error_message = "Unable to extract RAR archive. Please use ZIP format instead, which has better compatibility."
                     elif "all extraction methods failed" in error_message.lower():
                         error_message = "Unable to extract the archive. Please try a different archive format (preferably ZIP) or check if the archive is corrupted."
+                    elif "file does not exist" in error_message.lower():
+                        error_message = "The archive file could not be found on the server. This may be a temporary issue. Please try again."
+                    elif "file is not readable" in error_message.lower():
+                        error_message = "The archive file could not be read. Please check the file and try again, preferably with a ZIP archive."
                     
                     send_message(chat_id, f"Error processing your archive: {error_message[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": str(e)}), 500
