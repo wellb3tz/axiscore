@@ -333,7 +333,7 @@ const ModelViewer = () => {
       }
       addDebugInfo(`Mobile renderer: Pixel ratio set to ${renderer.getPixelRatio()}`);
     } else {
-      renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(window.devicePixelRatio);
     }
     
     renderer.setSize(width, height);
@@ -343,7 +343,7 @@ const ModelViewer = () => {
       renderer.shadowMap.enabled = false;
       addDebugInfo('Shadows disabled for performance');
     } else {
-      renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = devicePerformance === 'high' 
         ? THREE.PCFSoftShadowMap  // Better quality shadows for high-end devices
         : THREE.BasicShadowMap;    // Basic shadows for medium devices
@@ -360,27 +360,27 @@ const ModelViewer = () => {
 
     // Only add complex lighting on medium/high performance devices
     if (devicePerformance !== 'low') {
-      // Directional light with shadows
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      directionalLight.position.set(5, 10, 7);
+    // Directional light with shadows
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 7);
       
       if (devicePerformance === 'high') {
-        directionalLight.castShadow = true;
-        directionalLight.shadow.mapSize.width = 1024;
-        directionalLight.shadow.mapSize.height = 1024;
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
       } else if (devicePerformance === 'medium') {
         directionalLight.castShadow = true;
         directionalLight.shadow.mapSize.width = 512;
         directionalLight.shadow.mapSize.height = 512;
       }
       
-      scene.add(directionalLight);
-      
+    scene.add(directionalLight);
+    
       // Hemisphere light for more natural lighting (only on high-end devices)
       if (devicePerformance === 'high') {
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
-        hemiLight.position.set(0, 20, 0);
-        scene.add(hemiLight);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    hemiLight.position.set(0, 20, 0);
+    scene.add(hemiLight);
       }
     } else {
       // For low-end devices, just add a simple directional light without shadows
@@ -503,21 +503,21 @@ const ModelViewer = () => {
 
     // Standardized model processing function to ensure consistent behavior across different loaders
     const processLoadedModel = (object) => {
-      setModelLoading(false);
-      addDebugInfo('Model loaded successfully');
+          setModelLoading(false);
+          addDebugInfo('Model loaded successfully');
 
-      // Handle different loader results
-      let model;
-      if (object.scene) {
-        // GLTF/GLB result
-        model = object.scene;
-      } else {
-        // FBX/OBJ result
-        model = object;
-      }
-      
-      // Store the model for later access
-      modelRef.current = model;
+          // Handle different loader results
+          let model;
+          if (object.scene) {
+            // GLTF/GLB result
+            model = object.scene;
+          } else {
+            // FBX/OBJ result
+            model = object;
+          }
+          
+          // Store the model for later access
+          modelRef.current = model;
 
       // Optimize model for mobile if needed
       if (isMobile) {
@@ -570,23 +570,23 @@ const ModelViewer = () => {
         }
       } else {
         // Desktop - full quality
-        model.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
-            
-            // Ensure materials are properly configured
-            if (child.material) {
-              if (Array.isArray(child.material)) {
-                child.material.forEach(material => {
-                  material.side = THREE.DoubleSide;
-                });
-              } else {
-                child.material.side = THREE.DoubleSide;
+          model.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+              
+              // Ensure materials are properly configured
+              if (child.material) {
+                if (Array.isArray(child.material)) {
+                  child.material.forEach(material => {
+                    material.side = THREE.DoubleSide;
+                  });
+                } else {
+                  child.material.side = THREE.DoubleSide;
+                }
               }
             }
-          }
-        });
+          });
       }
 
       // Detect if this is an FBX model
@@ -605,19 +605,19 @@ const ModelViewer = () => {
       }
 
       // Center model and normalize size
-      const box = new THREE.Box3().setFromObject(model);
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3());
-      
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+
       addDebugInfo(`Raw model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
       addDebugInfo(`Center position: ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}`);
 
       // Reset model position and rotation for consistency
       model.position.set(-center.x, -center.y, -center.z);
       model.rotation.set(0, 0, 0);
-      
+
       // Standard scale calculation for consistent size
-      const maxDim = Math.max(size.x, size.y, size.z);
+          const maxDim = Math.max(size.x, size.y, size.z);
       let scale = 5 / maxDim; // Normalize to a standard size
       
       // Apply different scaling for different model types
@@ -644,36 +644,36 @@ const ModelViewer = () => {
       addDebugInfo(`Scaled model dimensions: ${scaledSize.x.toFixed(2)} x ${scaledSize.y.toFixed(2)} x ${scaledSize.z.toFixed(2)}`);
 
       // Place camera at a standardized position based on model bounds
-      const fov = camera.fov * (Math.PI / 180);
+          const fov = camera.fov * (Math.PI / 180);
       const cameraDistance = Math.max(
         scaledSize.x,
         scaledSize.y,
         scaledSize.z
       ) / (2 * Math.tan(fov / 2));
-      
+          
       // Adjust camera position based on model type for consistency
       const cameraZ = cameraDistance * 1.5; // Add some padding
       
       // Set camera to a consistent position for all model types
-      camera.position.set(cameraZ, cameraZ, cameraZ);
-      camera.lookAt(new THREE.Vector3(0, 0, 0));
+          camera.position.set(cameraZ, cameraZ, cameraZ);
+          camera.lookAt(new THREE.Vector3(0, 0, 0));
       addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}`);
-      
-      // Set control target to center of model
-      controls.target.set(0, 0, 0);
-      controls.update();
-      
-      addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
-      
-      scene.add(model);
-      
-      // Stop auto-rotate after 5 seconds
-      setTimeout(() => {
-        if (controlsRef.current) {
-          controlsRef.current.autoRotate = false;
-        }
-      }, 5000);
-      
+          
+          // Set control target to center of model
+          controls.target.set(0, 0, 0);
+          controls.update();
+          
+          addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+          
+          scene.add(model);
+          
+          // Stop auto-rotate after 5 seconds
+          setTimeout(() => {
+            if (controlsRef.current) {
+              controlsRef.current.autoRotate = false;
+            }
+          }, 5000);
+          
       // We're removing the Telegram MainButton that showed "Model Loaded"
     };
     
@@ -728,7 +728,7 @@ const ModelViewer = () => {
         if (material.envMap) {
           material.envMap.dispose();
           material.envMap = null;
-        }
+          }
       }
     };
 
@@ -912,17 +912,17 @@ const ModelViewer = () => {
       object.dispose();
     }
     
-    if (object.geometry) {
-      object.geometry.dispose();
-    }
-    
-    if (object.material) {
-      if (Array.isArray(object.material)) {
+          if (object.geometry) {
+            object.geometry.dispose();
+          }
+          
+          if (object.material) {
+            if (Array.isArray(object.material)) {
         object.material.forEach(disposeMaterial);
-      } else {
-        disposeMaterial(object.material);
-      }
-    }
+            } else {
+              disposeMaterial(object.material);
+            }
+          }
     
     if (object.children) {
       for (let i = 0; i < object.children.length; i++) {
@@ -1134,24 +1134,24 @@ const ModelViewer = () => {
       
       {/* Model info - shown when info button is clicked, optimized for mobile */}
       {showInfo && (
-        <div className="model-info" style={{
-          position: 'absolute',
+      <div className="model-info" style={{
+        position: 'absolute',
           top: isMobile ? '84px' : '70px', // Position below button on mobile
           left: isMobile ? '24px' : '20px',
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          color: 'white',
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        color: 'white',
           padding: isMobile ? '14px' : '10px', // Larger padding on mobile
-          borderRadius: '4px',
+        borderRadius: '4px',
           maxWidth: isMobile ? '80%' : '300px', // Wider on mobile
           fontSize: isMobile ? '16px' : '14px', // Larger text on mobile
           fontFamily: 'Oswald, sans-serif',
           zIndex: 9
-        }}>
-          <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
-          <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
-          {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
+      }}>
+        <div><strong>Model:</strong> {modelData.model_url.split('/').pop()}</div>
+        <div><strong>Type:</strong> {detectedExtension ? detectedExtension.toUpperCase() : modelData.file_extension}</div>
+        {modelData.uuid && <div><strong>ID:</strong> {modelData.uuid.substring(0, 8)}...</div>}
           {isMobile && <div><strong>Device:</strong> Mobile ({devicePerformance} performance)</div>}
-        </div>
+      </div>
       )}
       
       {modelLoading && (
