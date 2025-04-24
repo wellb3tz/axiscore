@@ -10,6 +10,8 @@ RUN apt-get update && \
     p7zip-full \
     unrar-free \
     unzip \
+    gcc \
+    python3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -19,14 +21,16 @@ COPY requirements.txt .
 # Install the dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python packages for RAR handling (as backup for unrar-free limitations)
-RUN pip install --no-cache-dir patool rarfile py7zr
+# Install Python packages for RAR handling (with more verbose output)
+RUN pip install --no-cache-dir --verbose patoolib rarfile py7zr
 
 # Copy the rest of the application code into the container
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p uploads
+RUN mkdir -p uploads && \
+    chmod -R 777 uploads && \
+    chmod -R 777 /tmp
 
 # Set proper permissions
 RUN chmod -R 755 .
