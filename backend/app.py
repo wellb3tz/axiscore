@@ -116,7 +116,8 @@ def telegram_auth():
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
-    global IGNORE_ALL_ARCHIVES
+    # Declare all globals at the beginning of the function
+    global IGNORE_ALL_ARCHIVES, LAST_RESET_TIME
     
     # Clean up any stale processing locks
     current_time = datetime.now().timestamp()
@@ -561,7 +562,6 @@ Axiscore 3D Model Viewer Help:
 • If you're stuck in a processing loop, use /reset command
             """
         elif text.lower() == '/reset':
-            global IGNORE_ALL_ARCHIVES, LAST_RESET_TIME
             current_time = datetime.now().timestamp()
             
             # Reset failed archives for this user
@@ -591,11 +591,9 @@ Axiscore 3D Model Viewer Help:
             else:
                 response_text = "Could not reset due to database connection issues. Please try again later."
         elif text.lower() == '/enable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            global IGNORE_ALL_ARCHIVES
             IGNORE_ALL_ARCHIVES = False
             response_text = "Archive processing has been re-enabled."
         elif text.lower() == '/disable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            global IGNORE_ALL_ARCHIVES
             IGNORE_ALL_ARCHIVES = True
             response_text = "Archive processing has been disabled (circuit breaker active)."
         elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
@@ -660,7 +658,6 @@ Commands:
             except:
                 response_text = "Usage: /clear file_id"
         elif text.lower() == '/emergency_stop' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            global IGNORE_ALL_ARCHIVES
             # This is a nuclear option - stops all archive processing
             IGNORE_ALL_ARCHIVES = True
             
