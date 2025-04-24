@@ -80,6 +80,10 @@ PROCESSING_FILES = set()
 PROCESSING_TIMES = {}
 MAX_PROCESSING_TIME = 300  # seconds (5 minutes) before automatically clearing a processing lock
 
+# "Circuit breaker" for stubborn webhooks
+IGNORE_ALL_ARCHIVES = False
+LAST_RESET_TIME = 0
+
 # Helper function to clean up processing state
 def clear_processing_state(file_id):
     """Remove a file from processing tracking"""
@@ -112,6 +116,8 @@ def telegram_auth():
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
+    global IGNORE_ALL_ARCHIVES
+    
     # Clean up any stale processing locks
     current_time = datetime.now().timestamp()
     stale_files = []
@@ -152,9 +158,17 @@ def webhook():
         
         # Check if it's an archive file
         if file_name.lower().endswith(('.rar', '.zip', '.7z')):
+            # Emergency circuit breaker - if we're in ignore mode for archives
+            if IGNORE_ALL_ARCHIVES:
+                print(f"IGNORED ARCHIVE due to circuit breaker: {file_name}, ID: {file_id}")
+                return jsonify({"status": "ignored", "msg": "Archives temporarily disabled"}), 200
+                
             # Process archive file
             try:
                 print(f"Processing archive: {file_name}, ID: {file_id}")
+                
+                # Print raw data for debugging
+                print(f"DEBUG - Message data: {json.dumps(message, indent=2)}")
                 
                 # Check if this file is already being processed (prevents loops)
                 if file_id in PROCESSING_FILES:
@@ -547,6 +561,9 @@ Axiscore 3D Model Viewer Help:
 • If you're stuck in a processing loop, use /reset command
             """
         elif text.lower() == '/reset':
+            global IGNORE_ALL_ARCHIVES, LAST_RESET_TIME
+            current_time = datetime.now().timestamp()
+            
             # Reset failed archives for this user
             if db.ensure_connection():
                 db.execute(
@@ -561,9 +578,26 @@ Axiscore 3D Model Viewer Help:
                 for file_id in file_ids_to_remove:
                     clear_processing_state(file_id)
                 
-                response_text = f"Reset successful. Cleared {len(file_ids_to_remove)} processing locks. Any archives that previously failed can now be processed again."
+                # Check if this is a rapid reset (within 60 seconds of previous reset)
+                # If so, enable the circuit breaker as an emergency measure
+                if current_time - LAST_RESET_TIME < 60:
+                    IGNORE_ALL_ARCHIVES = True
+                    response_text = f"🚨 EMERGENCY RESET detected! Archive processing has been disabled as a circuit breaker. Cleared {len(file_ids_to_remove)} processing locks."
+                else:
+                    response_text = f"Reset successful. Cleared {len(file_ids_to_remove)} processing locks. Any archives that previously failed can now be processed again."
+                
+                # Update last reset time
+                LAST_RESET_TIME = current_time
             else:
                 response_text = "Could not reset due to database connection issues. Please try again later."
+        elif text.lower() == '/enable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            global IGNORE_ALL_ARCHIVES
+            IGNORE_ALL_ARCHIVES = False
+            response_text = "Archive processing has been re-enabled."
+        elif text.lower() == '/disable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            global IGNORE_ALL_ARCHIVES
+            IGNORE_ALL_ARCHIVES = True
+            response_text = "Archive processing has been disabled (circuit breaker active)."
         elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
             # Special admin command to initialize the failed_archives table and add problematic files
             if db.ensure_connection():
@@ -595,7 +629,25 @@ Axiscore 3D Model Viewer Help:
         elif text.lower() == '/status':
             # Show current processing status for debugging
             processing_count = len(PROCESSING_FILES)
-            response_text = f"System status:\n- Files being processed: {processing_count}\n- Use /reset to clear processing queue"
+            circuit_breaker = "🔴 ACTIVE" if IGNORE_ALL_ARCHIVES else "🟢 Inactive"
+            current_time = datetime.now().timestamp()
+            
+            # List all file IDs being processed (truncate if too many)
+            processing_files_list = list(PROCESSING_FILES)
+            if len(processing_files_list) > 5:
+                files_str = ", ".join(processing_files_list[:5]) + f" and {len(processing_files_list) - 5} more"
+            else:
+                files_str = ", ".join(processing_files_list) if processing_files_list else "None"
+                
+            response_text = f"""System status:
+- Files being processed: {processing_count}
+- Processing files: {files_str}
+- Circuit breaker: {circuit_breaker}
+- Last reset: {int(current_time - LAST_RESET_TIME)} seconds ago
+
+Commands:
+- /reset - Clear processing queue and failed archives
+- /status - Show this status message"""
         elif text.lower().startswith('/clear ') and str(chat_id) in ADMIN_CHAT_IDS.split(','):
             # Allow admins to clear specific file_id
             try:
@@ -607,6 +659,22 @@ Axiscore 3D Model Viewer Help:
                     response_text = f"File ID not found in processing list: {file_id}"
             except:
                 response_text = "Usage: /clear file_id"
+        elif text.lower() == '/emergency_stop' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            global IGNORE_ALL_ARCHIVES
+            # This is a nuclear option - stops all archive processing
+            IGNORE_ALL_ARCHIVES = True
+            
+            # Clear ALL processing
+            file_ids_to_remove = list(PROCESSING_FILES)
+            for file_id in file_ids_to_remove:
+                clear_processing_state(file_id)
+                
+            # Clear ALL failed archives
+            if db.ensure_connection():
+                db.execute("DELETE FROM failed_archives")
+                db.commit()
+                
+            response_text = f"🚨 EMERGENCY STOP executed! All archive processing disabled and {len(file_ids_to_remove)} processing locks cleared. Use /enable_archives to re-enable when safe."
         else:
             # Generic response for other messages
             response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
