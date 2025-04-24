@@ -57,7 +57,6 @@ def extract_archive(file_path):
                 process = subprocess.run(
                     ['unrar-free', 'x', file_path, extract_path],
                     capture_output=True,
-                    text=True,
                     check=True
                 )
                 result['success'] = True
@@ -70,44 +69,31 @@ def extract_archive(file_path):
                     process = subprocess.run(
                         ['unrar', 'x', file_path, extract_path],
                         capture_output=True,
-                        text=True,
                         check=True
                     )
                     result['success'] = True
                     print(f"Extracted RAR file using unrar: {file_path}")
                 except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                    print(f"unrar extraction also failed: {str(e)}")
+                    print(f"unrar extraction failed: {str(e)}")
                     
-                    # Fallback to Python-based extraction
+                    # Fallback to Python-based extraction for RAR
                     if PYTHON_ARCHIVE_AVAILABLE:
                         try:
-                            # Try rarfile
-                            rarfile.UNRAR_TOOL = None  # Use bundled Python implementation if possible
-                            with rarfile.RarFile(file_path) as rf:
-                                rf.extractall(extract_path)
+                            rarfile.RarFile(file_path).extractall(path=extract_path)
                             result['success'] = True
                             print(f"Extracted RAR file using Python rarfile: {file_path}")
                         except Exception as e:
                             print(f"Python rarfile extraction failed: {str(e)}")
-                            
-                            # Last attempt with patool
-                            try:
-                                patoolib.extract_archive(file_path, outdir=extract_path)
-                                result['success'] = True
-                                print(f"Extracted RAR file using patool: {file_path}")
-                            except Exception as e:
-                                print(f"patool extraction failed: {str(e)}")
-                                raise Exception(f"All RAR extraction methods failed: {str(e)}")
+                            raise Exception(f"Failed to extract RAR file: {str(e)}")
                     else:
                         raise Exception("Failed to extract RAR file, both command-line and Python methods unavailable")
                 
         elif file_ext in ['.zip']:
-            # Try with unzip
+            # Try with unzip first
             try:
                 process = subprocess.run(
                     ['unzip', file_path, '-d', extract_path],
                     capture_output=True,
-                    text=True,
                     check=True
                 )
                 result['success'] = True
@@ -118,8 +104,8 @@ def extract_archive(file_path):
                 # Fallback to Python-based extraction for ZIP
                 if PYTHON_ARCHIVE_AVAILABLE:
                     try:
-                        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                            zip_ref.extractall(extract_path)
+                        with zipfile.ZipFile(file_path, 'r') as z:
+                            z.extractall(path=extract_path)
                         result['success'] = True
                         print(f"Extracted ZIP file using Python zipfile: {file_path}")
                     except Exception as e:
@@ -198,22 +184,51 @@ def extract_archive(file_path):
     
     return result
 
-def list_files_recursive(directory):
+def list_files_recursive(dir_path):
     """
-    List all files in a directory and its subdirectories.
+    List all files in a directory recursively.
     
     Args:
-        directory (str): Path to directory
+        dir_path (str): Path to the directory
         
     Returns:
-        list: List of file paths relative to the directory
+        list: List of dictionaries with file information
     """
     files = []
-    for root, _, filenames in os.walk(directory):
-        for filename in filenames:
-            file_path = os.path.join(root, filename)
-            rel_path = os.path.relpath(file_path, directory)
-            files.append(rel_path)
+    
+    try:
+        for root, dirs, filenames in os.walk(dir_path):
+            for filename in filenames:
+                # Get the full path
+                full_path = os.path.join(root, filename)
+                
+                # Get the relative path from the extraction directory
+                rel_path = os.path.relpath(full_path, dir_path)
+                
+                # Handle non-UTF-8 filenames
+                try:
+                    # Try to encode/decode to validate
+                    rel_path.encode('utf-8').decode('utf-8')
+                except UnicodeEncodeError:
+                    # If we can't encode, create a sanitized version
+                    rel_path = f"renamed_file_{uuid.uuid4()}{os.path.splitext(filename)[1]}"
+                    # Rename the actual file to match our sanitized name
+                    new_full_path = os.path.join(os.path.dirname(full_path), rel_path)
+                    try:
+                        os.rename(full_path, new_full_path)
+                        full_path = new_full_path
+                    except:
+                        # If renaming fails, just skip this file
+                        continue
+                
+                files.append({
+                    'path': rel_path,
+                    'filename': os.path.basename(rel_path),
+                    'extension': os.path.splitext(rel_path)[1].lower()
+                })
+    except Exception as e:
+        print(f"Error listing files: {e}")
+    
     return files
 
 def find_3d_model_files(file_list):

@@ -165,7 +165,13 @@ def webhook():
                     extract_result = extract_archive(temp_file_path)
                     
                     if not extract_result['success']:
-                        raise Exception(f"Failed to extract archive: {extract_result['error']}")
+                        error_msg = extract_result['error']
+                        print(f"Failed to extract archive: {error_msg}")
+                        send_message(chat_id, f"Error processing your archive: Failed to extract archive: {error_msg[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                        # Clean up the temporary file
+                        if os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+                        return jsonify({"status": "error", "msg": f"Failed to extract archive: {error_msg}"}), 500
                     
                     # Find 3D model files in the extracted directory
                     extract_path = extract_result['extract_path']
@@ -339,7 +345,12 @@ def webhook():
                     if os.path.exists(temp_file_path):
                         os.remove(temp_file_path)
                     
-                    send_message(chat_id, f"Error processing your archive: {str(e)[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                    # Provide a more detailed error message
+                    error_message = str(e)
+                    if "utf-8" in error_message.lower():
+                        error_message = "The archive contains filenames with special characters that can't be processed. Please rename files to use only standard characters."
+                    
+                    send_message(chat_id, f"Error processing your archive: {error_message[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": str(e)}), 500
             except Exception as e:
                 print(f"Error processing archive: {e}")
