@@ -353,6 +353,10 @@ def webhook():
                         error_message = "The RAR file appears to be corrupted or incomplete. Please try re-downloading it or use a different archive format like ZIP."
                     elif "failed to extract rar" in error_message.lower():
                         error_message = "Failed to extract the RAR file. Please try using a different archive format like ZIP, or ensure the RAR file is not password-protected."
+                    elif "unrar command failed" in error_message.lower() or "/usr/bin/unrar" in error_message.lower():
+                        error_message = "Server extraction tool error. Please try uploading a ZIP archive instead of RAR, or try again later."
+                    elif "command " in error_message.lower() and "not found" in error_message.lower():
+                        error_message = "Archive extraction tools are missing on the server. Please try using a ZIP archive or contact support."
                     
                     send_message(chat_id, f"Error processing your archive: {error_message[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": str(e)}), 500

@@ -1,17 +1,17 @@
 # Use the official Python image from the Docker Hub
 FROM python:3.9-slim
 
-# Install system dependencies for archive extraction
-# Use unrar-free since unrar is non-free and not in main repos
-RUN apt-get update && \
-    apt-get install -y \
-    unrar-free \
-    unzip \
-    p7zip-full \
-    && rm -rf /var/lib/apt/lists/*
-
 # Set the working directory in the container
 WORKDIR /app
+
+# Install system dependencies including archive extraction tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    p7zip-full \
+    unrar \
+    unzip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements.txt file into the container
 COPY requirements.txt .

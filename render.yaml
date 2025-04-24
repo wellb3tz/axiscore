@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: axiscore
+    env: python
+    buildCommand: ./backend/build.sh
+    startCommand: cd backend && python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+    autoDeploy: true 
