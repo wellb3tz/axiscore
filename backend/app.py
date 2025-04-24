@@ -349,6 +349,10 @@ def webhook():
                     error_message = str(e)
                     if "utf-8" in error_message.lower():
                         error_message = "The archive contains filenames with special characters that can't be processed. Please rename files to use only standard characters."
+                    elif "req=" in error_message.lower() and "got=" in error_message.lower():
+                        error_message = "The RAR file appears to be corrupted or incomplete. Please try re-downloading it or use a different archive format like ZIP."
+                    elif "failed to extract rar" in error_message.lower():
+                        error_message = "Failed to extract the RAR file. Please try using a different archive format like ZIP, or ensure the RAR file is not password-protected."
                     
                     send_message(chat_id, f"Error processing your archive: {error_message[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
                     return jsonify({"status": "error", "msg": str(e)}), 500

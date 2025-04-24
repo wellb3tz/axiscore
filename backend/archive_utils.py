@@ -52,41 +52,67 @@ def extract_archive(file_path):
     try:
         # Try different extraction commands based on file extension
         if file_ext in ['.rar']:
-            # Try with unrar-free first
+            # Try with 7z first as it's often more robust with RAR files
             try:
+                print(f"Trying 7z for RAR extraction: {file_path}")
                 process = subprocess.run(
-                    ['unrar-free', 'x', file_path, extract_path],
+                    ['7z', 'x', file_path, f'-o{extract_path}'],
                     capture_output=True,
                     check=True
                 )
                 result['success'] = True
-                print(f"Extracted RAR file using unrar-free: {file_path}")
+                print(f"Extracted RAR file using 7z: {file_path}")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                print(f"unrar-free extraction failed: {str(e)}")
+                print(f"7z extraction for RAR failed: {str(e)}")
                 
-                # Fallback to standard unrar if available
+                # Try with unrar-free next
                 try:
                     process = subprocess.run(
-                        ['unrar', 'x', file_path, extract_path],
+                        ['unrar-free', 'x', file_path, extract_path],
                         capture_output=True,
                         check=True
                     )
                     result['success'] = True
-                    print(f"Extracted RAR file using unrar: {file_path}")
+                    print(f"Extracted RAR file using unrar-free: {file_path}")
                 except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                    print(f"unrar extraction failed: {str(e)}")
+                    print(f"unrar-free extraction failed: {str(e)}")
                     
-                    # Fallback to Python-based extraction for RAR
-                    if PYTHON_ARCHIVE_AVAILABLE:
-                        try:
-                            rarfile.RarFile(file_path).extractall(path=extract_path)
-                            result['success'] = True
-                            print(f"Extracted RAR file using Python rarfile: {file_path}")
-                        except Exception as e:
-                            print(f"Python rarfile extraction failed: {str(e)}")
-                            raise Exception(f"Failed to extract RAR file: {str(e)}")
-                    else:
-                        raise Exception("Failed to extract RAR file, both command-line and Python methods unavailable")
+                    # Fallback to standard unrar if available
+                    try:
+                        process = subprocess.run(
+                            ['unrar', 'x', file_path, extract_path],
+                            capture_output=True,
+                            check=True
+                        )
+                        result['success'] = True
+                        print(f"Extracted RAR file using unrar: {file_path}")
+                    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                        print(f"unrar extraction failed: {str(e)}")
+                        
+                        # Fallback to Python-based extraction for RAR
+                        if PYTHON_ARCHIVE_AVAILABLE:
+                            try:
+                                # Configure rarfile for better handling
+                                rarfile.UNRAR_TOOL = None  # Use internal implementation if possible
+                                rarfile.PATH_SEP = '/'
+                                # Attempt to open with more lenient error checking
+                                with rarfile.RarFile(file_path, errors='ignore') as rf:
+                                    rf.extractall(path=extract_path)
+                                result['success'] = True
+                                print(f"Extracted RAR file using Python rarfile: {file_path}")
+                            except Exception as e:
+                                print(f"Python rarfile extraction failed: {str(e)}")
+                                
+                                # Last resort - try patool
+                                try:
+                                    patoolib.extract_archive(file_path, outdir=extract_path)
+                                    result['success'] = True
+                                    print(f"Extracted RAR file using patool: {file_path}")
+                                except Exception as e:
+                                    print(f"patool extraction failed: {str(e)}")
+                                    raise Exception(f"Failed to extract RAR file: {str(e)}")
+                        else:
+                            raise Exception("Failed to extract RAR file, both command-line and Python methods unavailable")
                 
         elif file_ext in ['.zip']:
             # Try with unzip first
@@ -101,18 +127,30 @@ def extract_archive(file_path):
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print(f"unzip extraction failed: {str(e)}")
                 
-                # Fallback to Python-based extraction for ZIP
-                if PYTHON_ARCHIVE_AVAILABLE:
-                    try:
-                        with zipfile.ZipFile(file_path, 'r') as z:
-                            z.extractall(path=extract_path)
-                        result['success'] = True
-                        print(f"Extracted ZIP file using Python zipfile: {file_path}")
-                    except Exception as e:
-                        print(f"Python zipfile extraction failed: {str(e)}")
-                        raise Exception(f"Failed to extract ZIP file: {str(e)}")
-                else:
-                    raise Exception("Failed to extract ZIP file, both command-line and Python methods unavailable")
+                # Try with 7z
+                try:
+                    process = subprocess.run(
+                        ['7z', 'x', file_path, f'-o{extract_path}'],
+                        capture_output=True,
+                        check=True
+                    )
+                    result['success'] = True
+                    print(f"Extracted ZIP file using 7z: {file_path}")
+                except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                    print(f"7z extraction for ZIP failed: {str(e)}")
+                
+                    # Fallback to Python-based extraction for ZIP
+                    if PYTHON_ARCHIVE_AVAILABLE:
+                        try:
+                            with zipfile.ZipFile(file_path, 'r') as z:
+                                z.extractall(path=extract_path)
+                            result['success'] = True
+                            print(f"Extracted ZIP file using Python zipfile: {file_path}")
+                        except Exception as e:
+                            print(f"Python zipfile extraction failed: {str(e)}")
+                            raise Exception(f"Failed to extract ZIP file: {str(e)}")
+                    else:
+                        raise Exception("Failed to extract ZIP file, both command-line and Python methods unavailable")
         
         elif file_ext in ['.7z']:
             # Try with 7z
@@ -120,7 +158,6 @@ def extract_archive(file_path):
                 process = subprocess.run(
                     ['7z', 'x', file_path, f'-o{extract_path}'],
                     capture_output=True,
-                    text=True,
                     check=True
                 )
                 result['success'] = True
@@ -147,7 +184,6 @@ def extract_archive(file_path):
                 process = subprocess.run(
                     ['7z', 'x', file_path, f'-o{extract_path}'],
                     capture_output=True,
-                    text=True,
                     check=True
                 )
                 result['success'] = True
@@ -167,9 +203,16 @@ def extract_archive(file_path):
                 else:
                     raise Exception("All extraction methods failed, and Python fallbacks not available")
         
-        # If extraction succeeded, list the files
+        # If extraction succeeded but no files were found, it may be a false positive
         if result['success']:
-            result['files'] = list_files_recursive(extract_path)
+            file_list = list_files_recursive(extract_path)
+            if not file_list:
+                print("Warning: Extraction reported success but no files were found")
+                result['success'] = False
+                result['error'] = "Extraction appeared to succeed but no files were found"
+            else:
+                result['files'] = file_list
+                print(f"Successfully extracted {len(file_list)} files")
             
     except Exception as e:
         # If anything fails, clean up and return error
