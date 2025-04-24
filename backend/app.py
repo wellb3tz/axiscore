@@ -75,6 +75,17 @@ TELEGRAM_BOT_SECRET = TELEGRAM_BOT_TOKEN.split(':')[1] if TELEGRAM_BOT_TOKEN els
 # Admin chat IDs for special commands (comma-separated list)
 ADMIN_CHAT_IDS = os.getenv('ADMIN_CHAT_IDS', '')
 
+# Track files being processed to prevent loops
+PROCESSING_FILES = set()
+PROCESSING_TIMES = {}
+MAX_PROCESSING_TIME = 300  # seconds (5 minutes) before automatically clearing a processing lock
+
+# Helper function to clean up processing state
+def clear_processing_state(file_id):
+    """Remove a file from processing tracking"""
+    PROCESSING_FILES.discard(file_id)
+    PROCESSING_TIMES.pop(file_id, None)
+
 # Initialize the database manager
 db = DatabaseManager()
 
@@ -101,6 +112,19 @@ def telegram_auth():
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
+    # Clean up any stale processing locks
+    current_time = datetime.now().timestamp()
+    stale_files = []
+    for file_id in PROCESSING_FILES:
+        start_time = PROCESSING_TIMES.get(file_id, 0)
+        if current_time - start_time > MAX_PROCESSING_TIME:
+            stale_files.append(file_id)
+    
+    # Remove stale files
+    for file_id in stale_files:
+        clear_processing_state(file_id)
+        print(f"Automatically cleared stale processing lock for file: {file_id}")
+    
     # If it's a GET request, just return a simple status
     if request.method == 'GET':
         return jsonify({
@@ -132,10 +156,20 @@ def webhook():
             try:
                 print(f"Processing archive: {file_name}, ID: {file_id}")
                 
+                # Check if this file is already being processed (prevents loops)
+                if file_id in PROCESSING_FILES:
+                    print(f"File {file_id} is already being processed, ignoring duplicate webhook")
+                    return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
+                
+                # Add to processing set
+                PROCESSING_FILES.add(file_id)
+                PROCESSING_TIMES[file_id] = datetime.now().timestamp()
+                
                 # Ensure database connection before proceeding
                 if not db.ensure_connection():
                     print("Database connection unavailable, cannot process archive")
                     send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
+                    clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                 
                 # Check if file was already processed and failed before
@@ -159,6 +193,7 @@ def webhook():
                 if not file_data:
                     print("Failed to download archive from Telegram")
                     send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                    clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": "Failed to download file"}), 500
                 
                 print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
@@ -193,6 +228,7 @@ def webhook():
                         db.commit()
                         
                         send_message(chat_id, f"{user_msg} To try again with a different archive, use the /reset command first.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
                         raise Exception(f"Failed to extract archive: {error_msg}")
                     
                     # Find 3D model files in the extracted directory
@@ -214,6 +250,7 @@ def webhook():
                         # Clean up
                         cleanup_extraction(extract_path)
                         os.remove(temp_file_path)
+                        clear_processing_state(file_id)
                         return jsonify({"status": "error", "msg": "No 3D model files found"}), 400
                     
                     print(f"Found {len(model_files)} 3D model files in archive:")
@@ -272,6 +309,7 @@ def webhook():
                     if not processed_models:
                         print("Failed to process any models from the archive")
                         send_message(chat_id, "Failed to process any models from your archive. Please try again.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
                         return jsonify({"status": "error", "msg": "Failed to process models"}), 500
                     
                     # Send response to user with all processed models
@@ -359,6 +397,8 @@ def webhook():
                             # Send message for this model
                             send_webapp_button(chat_id, model_text, keyboard, TELEGRAM_BOT_TOKEN)
                     
+                    # Remove from processing set after successful completion
+                    clear_processing_state(file_id)
                     return jsonify({"status": "ok"}), 200
                     
                 except Exception as e:
@@ -368,10 +408,12 @@ def webhook():
                         os.remove(temp_file_path)
                     
                     send_message(chat_id, f"Error processing your archive: {str(e)[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                    clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": str(e)}), 500
             except Exception as e:
                 print(f"Error processing archive: {e}")
                 send_message(chat_id, "Failed to process your archive. Please try again.", TELEGRAM_BOT_TOKEN)
+                clear_processing_state(file_id)
                 return jsonify({"status": "error", "msg": str(e)}), 500
         
         # Check if it's a 3D model file
@@ -379,6 +421,15 @@ def webhook():
             # Download file from Telegram
             try:
                 print(f"Processing file: {file_name}, ID: {file_id}")
+                
+                # Check if this file is already being processed (prevents loops)
+                if file_id in PROCESSING_FILES:
+                    print(f"File {file_id} is already being processed, ignoring duplicate webhook")
+                    return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
+                
+                # Add to processing set
+                PROCESSING_FILES.add(file_id)
+                PROCESSING_TIMES[file_id] = datetime.now().timestamp()
                 
                 # Ensure database connection before proceeding
                 if not db.ensure_connection():
@@ -456,21 +507,27 @@ def webhook():
                         # Send the message with combined keyboard
                         send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
                         
+                        # Remove from processing set after success
+                        clear_processing_state(file_id)
                         return jsonify({"status": "ok"}), 200
                     else:
                         print("Failed to save model to storage")
                         send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
                 else:
                     print("Failed to download file from Telegram")
                     send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                    clear_processing_state(file_id)
             except psycopg2.Error as dbe:
                 print(f"Database error processing 3D model: {dbe}")
                 send_message(chat_id, f"Database error: {str(dbe)[:100]}. Please contact the administrator.", TELEGRAM_BOT_TOKEN)
+                clear_processing_state(file_id)
             except Exception as e:
                 import traceback
                 print(f"Error processing 3D model: {e}")
                 print(traceback.format_exc())
                 send_message(chat_id, "Failed to process your 3D model. Please try again.", TELEGRAM_BOT_TOKEN)
+                clear_processing_state(file_id)
         else:
             send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).", TELEGRAM_BOT_TOKEN)
     # Handle text messages
@@ -497,7 +554,14 @@ Axiscore 3D Model Viewer Help:
                     (chat_id,)
                 )
                 db.commit()
-                response_text = "Reset successful. Any archives that previously failed can now be processed again."
+                
+                # Also clear any processing locks for this user
+                file_ids_to_remove = list(PROCESSING_FILES)
+                
+                for file_id in file_ids_to_remove:
+                    clear_processing_state(file_id)
+                
+                response_text = f"Reset successful. Cleared {len(file_ids_to_remove)} processing locks. Any archives that previously failed can now be processed again."
             else:
                 response_text = "Could not reset due to database connection issues. Please try again later."
         elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
@@ -528,6 +592,21 @@ Axiscore 3D Model Viewer Help:
                     response_text = f"Admin cleanup encountered an error: {str(e)}"
             else:
                 response_text = "Could not perform admin cleanup due to database connection issues."
+        elif text.lower() == '/status':
+            # Show current processing status for debugging
+            processing_count = len(PROCESSING_FILES)
+            response_text = f"System status:\n- Files being processed: {processing_count}\n- Use /reset to clear processing queue"
+        elif text.lower().startswith('/clear ') and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            # Allow admins to clear specific file_id
+            try:
+                file_id = text.split(' ')[1].strip()
+                if file_id in PROCESSING_FILES:
+                    clear_processing_state(file_id)
+                    response_text = f"Cleared processing lock for file: {file_id}"
+                else:
+                    response_text = f"File ID not found in processing list: {file_id}"
+            except:
+                response_text = "Usage: /clear file_id"
         else:
             # Generic response for other messages
             response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
