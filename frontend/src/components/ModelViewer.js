@@ -304,17 +304,18 @@ const ModelViewer = () => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
     
-    // Add a grid to help with spatial orientation
+    // Add a grid to help with spatial orientation, positioned at y=-0.01 to be below models
     const gridSize = 20;
     const gridDivisions = 20;
     const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x888888, 0xcccccc);
+    gridHelper.position.y = -0.01; // Position grid slightly below origin
     scene.add(gridHelper);
     
     sceneRef.current = scene;
 
     // Camera with wider field of view for better visibility
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
-    camera.position.set(10, 8, 10); // Start with a better viewing angle
+    camera.position.set(10, 8, 10); // Initial position, will be adjusted when model loads
     cameraRef.current = camera;
 
     // Renderer with mobile optimizations
@@ -664,8 +665,8 @@ const ModelViewer = () => {
       addDebugInfo(`Raw model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
       addDebugInfo(`Center position: ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}`);
 
-      // Reset model position to center it at origin
-      model.position.set(-center.x, -center.y, -center.z);
+      // Reset model position to center it at origin and elevate it slightly above grid
+      model.position.set(-center.x, -center.y + 0.01, -center.z);
       model.rotation.set(0, 0, 0);
 
       // Standard scale calculation for consistent size
@@ -693,7 +694,17 @@ const ModelViewer = () => {
       // After scaling, recalculate the bounding box
       const scaledBox = new THREE.Box3().setFromObject(model);
       const scaledSize = scaledBox.getSize(new THREE.Vector3());
+      const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
       addDebugInfo(`Scaled model dimensions: ${scaledSize.x.toFixed(2)} x ${scaledSize.y.toFixed(2)} x ${scaledSize.z.toFixed(2)}`);
+
+      // Ensure the object sits correctly on the grid
+      // Calculate Y offset to place bottom of model right on the grid
+      const bottomY = scaledBox.min.y;
+      if (bottomY < 0) {
+        // If bottom is below the grid, move it up
+        model.position.y -= bottomY;
+        addDebugInfo(`Adjusted model Y position by ${(-bottomY).toFixed(2)} to sit on grid`);
+      }
 
       // Improved camera positioning based on model size
       const fov = camera.fov * (Math.PI / 180);
@@ -701,19 +712,20 @@ const ModelViewer = () => {
       
       // Calculate distance needed to fit the model in view
       // Adding padding factor to ensure the entire model is visible
-      const padding = 1.5; // Increased padding for better visibility
+      const padding = 1.8; // Increased padding for better visibility
       const cameraDistance = (maxScaledDim / 2) / Math.tan(fov / 2) * padding;
           
       // Set camera to a position that ensures model visibility
       const cameraZ = Math.max(cameraDistance, 5); // Minimum distance of 5 units
       
       // Position camera at an angle to better view the model
-      camera.position.set(cameraZ, cameraZ * 0.8, cameraZ);
-      camera.lookAt(new THREE.Vector3(0, 0, 0));
-      addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${(cameraZ * 0.8).toFixed(2)}, ${cameraZ.toFixed(2)}`);
+      // Use a 45-degree angle in the Y direction for better perspective
+      camera.position.set(cameraZ, cameraZ, cameraZ);
+      camera.lookAt(scaledCenter); // Look directly at the model's center
+      addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}`);
           
-      // Set control target to center of model
-      controls.target.set(0, 0, 0);
+      // Set control target to center of model for proper orbiting
+      controls.target.copy(scaledCenter);
       controls.update();
           
       addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
