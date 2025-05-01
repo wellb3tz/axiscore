@@ -509,7 +509,11 @@ const ModelViewer = () => {
     switch (extension) {
       case 'fbx':
         loader = new FBXLoader();
+        // Set the texture path to the same directory as the model
+        const modelDir = modelUrl.substring(0, modelUrl.lastIndexOf('/') + 1);
+        loader.setResourcePath(modelDir);
         addDebugInfo('Using FBXLoader for FBX file');
+        addDebugInfo(`Setting texture path to: ${modelDir}`);
         break;
       case 'obj':
         loader = new OBJLoader();
@@ -809,6 +813,10 @@ const ModelViewer = () => {
             addDebugInfo('Detected FBX file format from error message (Kaydara). Trying FBXLoader...');
             setDetectedExtension('fbx');
             const fbxLoader = new FBXLoader();
+            // Set texture path for FBX loader in fallback
+            const modelDir = modelUrl.substring(0, modelUrl.lastIndexOf('/') + 1);
+            fbxLoader.setResourcePath(modelDir);
+            addDebugInfo(`Setting texture path to: ${modelDir}`);
             fbxLoader.load(
               modelUrl,
               (object) => processLoadedModel(object),
@@ -839,6 +847,10 @@ const ModelViewer = () => {
             addDebugInfo('JSON parse error detected. Trying FBXLoader as fallback...');
             setDetectedExtension('fbx');
             const fbxLoader = new FBXLoader();
+            // Set texture path for FBX loader in fallback
+            const modelDir = modelUrl.substring(0, modelUrl.lastIndexOf('/') + 1);
+            fbxLoader.setResourcePath(modelDir);
+            addDebugInfo(`Setting texture path to: ${modelDir}`);
             fbxLoader.load(
               modelUrl,
               (object) => processLoadedModel(object),
