@@ -304,11 +304,17 @@ const ModelViewer = () => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
     
+    // Add a grid to help with spatial orientation
+    const gridSize = 20;
+    const gridDivisions = 20;
+    const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x888888, 0xcccccc);
+    scene.add(gridHelper);
+    
     sceneRef.current = scene;
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-    camera.position.set(5, 5, 5); // Position camera at an angle for better initial view
+    // Camera with wider field of view for better visibility
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
+    camera.position.set(10, 8, 10); // Start with a better viewing angle
     cameraRef.current = camera;
 
     // Renderer with mobile optimizations
@@ -651,19 +657,19 @@ const ModelViewer = () => {
       }
 
       // Center model and normalize size
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
 
       addDebugInfo(`Raw model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
       addDebugInfo(`Center position: ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}`);
 
-      // Reset model position and rotation for consistency
+      // Reset model position to center it at origin
       model.position.set(-center.x, -center.y, -center.z);
       model.rotation.set(0, 0, 0);
 
       // Standard scale calculation for consistent size
-          const maxDim = Math.max(size.x, size.y, size.z);
+      const maxDim = Math.max(size.x, size.y, size.z);
       let scale = 5 / maxDim; // Normalize to a standard size
       
       // Apply different scaling for different model types
@@ -689,36 +695,37 @@ const ModelViewer = () => {
       const scaledSize = scaledBox.getSize(new THREE.Vector3());
       addDebugInfo(`Scaled model dimensions: ${scaledSize.x.toFixed(2)} x ${scaledSize.y.toFixed(2)} x ${scaledSize.z.toFixed(2)}`);
 
-      // Place camera at a standardized position based on model bounds
-          const fov = camera.fov * (Math.PI / 180);
-      const cameraDistance = Math.max(
-        scaledSize.x,
-        scaledSize.y,
-        scaledSize.z
-      ) / (2 * Math.tan(fov / 2));
-          
-      // Adjust camera position based on model type for consistency
-      const cameraZ = cameraDistance * 1.5; // Add some padding
+      // Improved camera positioning based on model size
+      const fov = camera.fov * (Math.PI / 180);
+      const maxScaledDim = Math.max(scaledSize.x, scaledSize.y, scaledSize.z);
       
-      // Set camera to a consistent position for all model types
-          camera.position.set(cameraZ, cameraZ, cameraZ);
-          camera.lookAt(new THREE.Vector3(0, 0, 0));
-      addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}, ${cameraZ.toFixed(2)}`);
+      // Calculate distance needed to fit the model in view
+      // Adding padding factor to ensure the entire model is visible
+      const padding = 1.5; // Increased padding for better visibility
+      const cameraDistance = (maxScaledDim / 2) / Math.tan(fov / 2) * padding;
           
-          // Set control target to center of model
-          controls.target.set(0, 0, 0);
-          controls.update();
+      // Set camera to a position that ensures model visibility
+      const cameraZ = Math.max(cameraDistance, 5); // Minimum distance of 5 units
+      
+      // Position camera at an angle to better view the model
+      camera.position.set(cameraZ, cameraZ * 0.8, cameraZ);
+      camera.lookAt(new THREE.Vector3(0, 0, 0));
+      addDebugInfo(`Camera position set to: ${cameraZ.toFixed(2)}, ${(cameraZ * 0.8).toFixed(2)}, ${cameraZ.toFixed(2)}`);
           
-          addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
+      // Set control target to center of model
+      controls.target.set(0, 0, 0);
+      controls.update();
           
-          scene.add(model);
+      addDebugInfo(`Model dimensions: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
           
-          // Stop auto-rotate after 5 seconds
-          setTimeout(() => {
-            if (controlsRef.current) {
-              controlsRef.current.autoRotate = false;
-            }
-          }, 5000);
+      scene.add(model);
+          
+      // Stop auto-rotate after 5 seconds
+      setTimeout(() => {
+        if (controlsRef.current) {
+          controlsRef.current.autoRotate = false;
+        }
+      }, 5000);
           
       // We're removing the Telegram MainButton that showed "Model Loaded"
     };
