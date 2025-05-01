@@ -77,9 +77,9 @@ class DatabaseManager:
                 )
             ''')
             
-            # Create large_model_content table if it doesn't exist
+            # Create model_content table if it doesn't exist
             self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS large_model_content (
+                CREATE TABLE IF NOT EXISTS model_content (
                     model_id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -276,17 +276,17 @@ class DatabaseManager:
             # Begin a transaction
             self.begin_transaction()
             
-            # First, check if the large_model_content table exists
-            if not self.check_table_exists('large_model_content')[0]:
-                # Create large_model_content table if it doesn't exist
-                print("📋 Creating large_model_content table")
-                self.execute("""
-                    CREATE TABLE large_model_content (
+            # First, check if the model_content table exists
+            if not self.check_table_exists('model_content')[0]:
+                # Create model_content table if it doesn't exist
+                print("📋 Creating model_content table")
+                self.cursor.execute('''
+                    CREATE TABLE model_content (
                         model_id TEXT PRIMARY KEY,
                         content TEXT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
+                ''')
             
             # Check if content_size column exists in models table
             if not self.check_column_exists('models', 'content_size')[0]:
@@ -305,58 +305,44 @@ class DatabaseManager:
             
             print(f"🔗 Generated URL: {model_url}")
             
-            # Always store content in large_model_content table for backup
+            # Always store content in model_content table
             try:
                 self.execute(
-                    "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
+                    "INSERT INTO model_content (model_id, content) VALUES (%s, %s)",
                     (model_id, file_data['content'])
                 )
-                print(f"✅ Content stored in large_model_content table with ID: {model_id}")
+                print(f"✅ Content stored in model_content table with ID: {model_id}")
             except Exception as e:
-                print(f"❌ Error storing in large_model_content: {e}")
-                # Continue anyway, might work in models table
+                print(f"❌ Error storing in model_content: {e}")
+                # Try legacy table name as fallback for compatibility
+                try:
+                    self.execute(
+                        "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
+                        (model_id, file_data['content'])
+                    )
+                    print(f"✅ Content stored in legacy large_model_content table with ID: {model_id}")
+                except Exception as e2:
+                    print(f"❌ Error storing in legacy table: {e2}")
+                    raise e  # Re-raise the original error if both attempts fail
             
-            # Store the model information in the database with different strategies based on size
-            if content_size > 1024 * 1024:  # If larger than 1MB
-                print(f"📊 Large content detected ({content_size} bytes), storing reference only")
-                # For large models, store the model reference
-                try:
+            # Store only metadata in the models table (no content)
+            try:
+                self.execute(
+                    "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (telegram_id, filename, model_url, content_size, datetime.now())
+                )
+                print(f"✅ Model metadata stored in models table")
+            except psycopg2.Error as e:
+                # Check if error is due to missing column
+                if "column" in str(e) and "does not exist" in str(e):
+                    print(f"⚠️ Column error: {e}, trying with available columns")
+                    # Try with just the essential columns
                     self.execute(
-                        "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
-                        (telegram_id, filename, model_url, content_size, datetime.now())
+                        "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
+                        (telegram_id, filename, model_url)
                     )
-                    print(f"✅ Model reference stored in models table")
-                except psycopg2.Error as e:
-                    # Check if error is due to missing column
-                    if "column" in str(e) and "does not exist" in str(e):
-                        print(f"⚠️ Column error: {e}, trying with available columns")
-                        # Try with just the essential columns
-                        self.execute(
-                            "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
-                            (telegram_id, filename, model_url)
-                        )
-                    else:
-                        raise
-            else:
-                # For smaller models, store the content directly
-                print(f"📊 Standard content size ({content_size} bytes), storing directly")
-                try:
-                    self.execute(
-                        "INSERT INTO models (telegram_id, model_name, model_url, content, content_size, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (telegram_id, filename, model_url, file_data['content'], content_size, datetime.now())
-                    )
-                    print(f"✅ Model with content stored in models table")
-                except psycopg2.Error as e:
-                    # Check if error is due to missing column
-                    if "column" in str(e) and "does not exist" in str(e):
-                        print(f"⚠️ Column error: {e}, trying with available columns")
-                        # Try with just the essential columns
-                        self.execute(
-                            "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s)",
-                            (telegram_id, filename, model_url, file_data['content'])
-                        )
-                    else:
-                        raise
+                else:
+                    raise
             
             # Commit the transaction
             self.commit()
@@ -365,14 +351,14 @@ class DatabaseManager:
             # For debugging, try to verify the content was stored
             try:
                 result = self.execute(
-                    "SELECT model_id FROM large_model_content WHERE model_id = %s",
+                    "SELECT model_id FROM model_content WHERE model_id = %s",
                     (model_id,),
                     fetch='one'
                 )
                 if result:
-                    print(f"✅ Verified: Content exists in large_model_content table")
+                    print(f"✅ Verified: Content exists in model_content table")
                 else:
-                    print(f"⚠️ Warning: Content not found in large_model_content table")
+                    print(f"⚠️ Warning: Content not found in model_content table")
             except Exception as verify_err:
                 print(f"⚠️ Error verifying content: {verify_err}")
             

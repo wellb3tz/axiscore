@@ -917,41 +917,71 @@ def serve_model(model_id, filename):
                 if extracted_uuid:
                     print(f"📋 Extracted UUID from model_url: {extracted_uuid}")
         
-        # STEP 2: If we have a UUID, check large_model_content
+        # STEP 2: If we have a UUID, check model_content table
         if extracted_uuid:
-            print(f"🔍 Checking large_model_content table with UUID: {extracted_uuid}")
-            large_result = db.execute(
-                "SELECT content FROM large_model_content WHERE model_id = %s", 
+            print(f"🔍 Checking model_content table with UUID: {extracted_uuid}")
+            content_result = db.execute(
+                "SELECT content FROM model_content WHERE model_id = %s", 
                 (extracted_uuid,), 
                 fetch='one'
             )
             
-            if large_result and large_result[0]:
-                content = large_result[0]
-                print(f"✅ Found content in large_model_content table for UUID: {extracted_uuid}")
+            if content_result and content_result[0]:
+                content = content_result[0]
+                print(f"✅ Found content in model_content table for UUID: {extracted_uuid}")
             else:
-                print(f"⚠️ No content found in large_model_content table for UUID: {extracted_uuid}")
+                # Try legacy large_model_content table as fallback
+                print(f"🔍 Checking legacy large_model_content table with UUID: {extracted_uuid}")
+                large_result = db.execute(
+                    "SELECT content FROM large_model_content WHERE model_id = %s", 
+                    (extracted_uuid,), 
+                    fetch='one'
+                )
+                
+                if large_result and large_result[0]:
+                    content = large_result[0]
+                    print(f"✅ Found content in legacy large_model_content table for UUID: {extracted_uuid}")
+                else:
+                    print(f"⚠️ No content found in model content tables for UUID: {extracted_uuid}")
         else:
             print(f"⚠️ No UUID could be extracted from the request")
         
-        # STEP 3: If still no content, check large_model_content with the filename
+        # STEP 3: If still no content, check model_content with the filename
         if not content and not extracted_uuid:
-            print(f"🔍 Checking large_model_content table for any entry matching filename")
-            all_large_models = db.execute(
-                "SELECT model_id, content FROM large_model_content LIMIT 50", 
+            print(f"🔍 Checking model_content table for any entry matching filename")
+            all_models = db.execute(
+                "SELECT model_id, content FROM model_content LIMIT 50", 
                 fetch='all'
             )
             
-            if all_large_models:
-                for lm in all_large_models:
-                    large_model_id = lm[0]
-                    large_content = lm[1]
-                    print(f"📊 Found large model ID: {large_model_id}")
+            if all_models:
+                for model in all_models:
+                    model_id_from_db = model[0]
+                    model_content = model[1]
+                    print(f"📊 Found model ID: {model_id_from_db}")
                     
-                    if large_content:
-                        content = large_content
-                        print(f"✅ Using content from large model: {large_model_id}")
+                    if model_content:
+                        content = model_content
+                        print(f"✅ Using content from model_content table: {model_id_from_db}")
                         break
+            else:
+                # Try legacy table as fallback
+                print(f"🔍 Checking legacy large_model_content table for any entry")
+                all_large_models = db.execute(
+                    "SELECT model_id, content FROM large_model_content LIMIT 50", 
+                    fetch='all'
+                )
+                
+                if all_large_models:
+                    for lm in all_large_models:
+                        large_model_id = lm[0]
+                        large_content = lm[1]
+                        print(f"📊 Found large model ID: {large_model_id}")
+                        
+                        if large_content:
+                            content = large_content
+                            print(f"✅ Using content from legacy large_model_content table: {large_model_id}")
+                            break
         
         # If we still don't have content, report a 404
         if not content:
@@ -1125,7 +1155,7 @@ def index():
 def save_model_to_storage(file_data):
     """
     Save a 3D model to storage and return a unique URL.
-    For large models (>1MB), only store the model ID and not the content.
+    Stores model content in model_content table and metadata in models table.
     """
     try:
         # Check if valid base64 content
@@ -1169,19 +1199,19 @@ def save_model_to_storage(file_data):
         # Begin a transaction
         db.execute("BEGIN")
         
-        # First, check if the large_model_content table exists
+        # First, check if the model_content table exists
         db.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
-                WHERE table_name = 'large_model_content'
+                WHERE table_name = 'model_content'
             )
         """)
         
         if not db.fetchone()[0]:
-            # Create large_model_content table if it doesn't exist
-            print("📋 Creating large_model_content table")
+            # Create model_content table if it doesn't exist
+            print("📋 Creating model_content table")
             db.execute("""
-                CREATE TABLE large_model_content (
+                CREATE TABLE model_content (
                     model_id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -1212,58 +1242,44 @@ def save_model_to_storage(file_data):
         
         print(f"🔗 Generated URL: {model_url}")
         
-        # Always store content in large_model_content table for backup
+        # Always store content in model_content table
         try:
             db.execute(
-                "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
+                "INSERT INTO model_content (model_id, content) VALUES (%s, %s)",
                 (model_id, file_data['content'])
             )
-            print(f"✅ Content stored in large_model_content table with ID: {model_id}")
+            print(f"✅ Content stored in model_content table with ID: {model_id}")
         except Exception as e:
-            print(f"❌ Error storing in large_model_content: {e}")
-            # Continue anyway, might work in models table
+            print(f"❌ Error storing in model_content: {e}")
+            # Try legacy table name as fallback for compatibility
+            try:
+                db.execute(
+                    "INSERT INTO large_model_content (model_id, content) VALUES (%s, %s)",
+                    (model_id, file_data['content'])
+                )
+                print(f"✅ Content stored in legacy large_model_content table with ID: {model_id}")
+            except Exception as e2:
+                print(f"❌ Error storing in legacy table: {e2}")
+                raise e  # Re-raise the original error if both attempts fail
         
-        # Store the model information in the database with different strategies based on size
-        if content_size > 1024 * 1024:  # If larger than 1MB
-            print(f"📊 Large content detected ({content_size} bytes), storing reference only")
-            # For large models, store the model reference
-            try:
+        # Store only metadata in the models table (no content)
+        try:
+            db.execute(
+                "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
+                (telegram_id, filename, model_url, content_size, datetime.now())
+            )
+            print(f"✅ Model metadata stored in models table")
+        except psycopg2.Error as e:
+            # Check if error is due to missing column
+            if "column" in str(e) and "does not exist" in str(e):
+                print(f"⚠️ Column error: {e}, trying with available columns")
+                # Try with just the essential columns
                 db.execute(
-                    "INSERT INTO models (telegram_id, model_name, model_url, content_size, created_at) VALUES (%s, %s, %s, %s, %s)",
-                    (telegram_id, filename, model_url, content_size, datetime.now())
+                    "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
+                    (telegram_id, filename, model_url)
                 )
-                print(f"✅ Model reference stored in models table")
-            except psycopg2.Error as e:
-                # Check if error is due to missing column
-                if "column" in str(e) and "does not exist" in str(e):
-                    print(f"⚠️ Column error: {e}, trying with available columns")
-                    # Try with just the essential columns
-                    db.execute(
-                        "INSERT INTO models (telegram_id, model_name, model_url) VALUES (%s, %s, %s)",
-                        (telegram_id, filename, model_url)
-                    )
-                else:
-                    raise
-        else:
-            # For smaller models, store the content directly
-            print(f"📊 Standard content size ({content_size} bytes), storing directly")
-            try:
-                db.execute(
-                    "INSERT INTO models (telegram_id, model_name, model_url, content, content_size, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (telegram_id, filename, model_url, file_data['content'], content_size, datetime.now())
-                )
-                print(f"✅ Model with content stored in models table")
-            except psycopg2.Error as e:
-                # Check if error is due to missing column
-                if "column" in str(e) and "does not exist" in str(e):
-                    print(f"⚠️ Column error: {e}, trying with available columns")
-                    # Try with just the essential columns
-                    db.execute(
-                        "INSERT INTO models (telegram_id, model_name, model_url, content) VALUES (%s, %s, %s, %s)",
-                        (telegram_id, filename, model_url, file_data['content'])
-                    )
-                else:
-                    raise
+            else:
+                raise
         
         # Commit the transaction
         db.execute("COMMIT")
@@ -1271,11 +1287,16 @@ def save_model_to_storage(file_data):
         
         # For debugging, try to verify the content was stored
         try:
-            db.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
+            db.execute("SELECT model_id FROM model_content WHERE model_id = %s", (model_id,))
             if db.fetchone():
-                print(f"✅ Verified: Content exists in large_model_content table")
+                print(f"✅ Verified: Content exists in model_content table")
             else:
-                print(f"⚠️ Warning: Content not found in large_model_content table")
+                # Try legacy table as fallback
+                db.execute("SELECT model_id FROM large_model_content WHERE model_id = %s", (model_id,))
+                if db.fetchone():
+                    print(f"✅ Verified: Content exists in legacy large_model_content table")
+                else:
+                    print(f"⚠️ Warning: Content not found in any content table")
         except Exception as verify_err:
             print(f"⚠️ Error verifying content: {verify_err}")
         
