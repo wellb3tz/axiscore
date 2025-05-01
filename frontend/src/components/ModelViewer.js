@@ -440,19 +440,19 @@ const ModelViewer = () => {
         addDebugInfo(`Extracted file extension from URL: ${extension}`);
       } else {
         // Check URL for extension indicators
-        if (modelUrl.includes('fbx')) {
-          extension = 'fbx';
-          setDetectedExtension('fbx');
-          addDebugInfo(`Detected FBX model from URL pattern`);
-        } else if (modelUrl.includes('obj')) {
+        if (modelUrl.includes('.obj') || modelUrl.toLowerCase().includes('obj')) {
           extension = 'obj';
           setDetectedExtension('obj');
           addDebugInfo(`Detected OBJ model from URL pattern`);
-        } else if (modelUrl.includes('gltf')) {
+        } else if (modelUrl.includes('.fbx') || modelUrl.toLowerCase().includes('fbx')) {
+          extension = 'fbx';
+          setDetectedExtension('fbx');
+          addDebugInfo(`Detected FBX model from URL pattern`);
+        } else if (modelUrl.includes('.gltf') || modelUrl.toLowerCase().includes('gltf')) {
           extension = 'gltf';
           setDetectedExtension('gltf');
           addDebugInfo(`Detected GLTF model from URL pattern`);
-        } else if (modelUrl.includes('glb')) {
+        } else if (modelUrl.includes('.glb') || modelUrl.toLowerCase().includes('glb')) {
           extension = 'glb';
           setDetectedExtension('glb');
           addDebugInfo(`Detected GLB model from URL pattern`);
@@ -462,6 +462,48 @@ const ModelViewer = () => {
     
     addDebugInfo(`Loading model: ${modelUrl}`);
     addDebugInfo(`Using file extension: ${extension}`);
+
+    // Added: Check the beginning of the file content for OBJ signature
+    // This helps when the file extension is missing or incorrect
+    const checkFileContentSignature = async () => {
+      try {
+        const response = await fetch(modelUrl, { method: 'HEAD' });
+        if (!response.ok) return;
+        
+        const contentType = response.headers.get('content-type');
+        // If content type indicates text or binary and we didn't already detect the right format
+        if (contentType) {
+          const textResponse = await fetch(modelUrl);
+          if (!textResponse.ok) return;
+          
+          // Read the first chunk of the file to check for file signatures
+          const reader = textResponse.body.getReader();
+          const { value } = await reader.read();
+          const text = new TextDecoder().decode(value);
+          
+          // Check for OBJ file signature (usually starts with # or v)
+          if ((text.trim().startsWith('#') || text.trim().startsWith('v ')) && extension !== 'obj') {
+            extension = 'obj';
+            setDetectedExtension('obj');
+            addDebugInfo(`Detected OBJ model from file content signature`);
+          }
+          
+          // Check for FBX file signature (starts with "Kaydara FBX")
+          if (text.includes('Kaydara FB') && extension !== 'fbx') {
+            extension = 'fbx';
+            setDetectedExtension('fbx');
+            addDebugInfo(`Detected FBX model from file content signature`);
+          }
+        }
+      } catch (error) {
+        addDebugInfo(`Error checking file signature: ${error.message}`);
+      }
+    };
+    
+    // Try to check file content if the URL is accessible
+    if (modelUrl && modelUrl.startsWith('http')) {
+      checkFileContentSignature();
+    }
 
     let loader;
     switch (extension) {
@@ -750,7 +792,49 @@ const ModelViewer = () => {
             error.message.includes('JSON')
           );
           
-          if (isJsonError && extension === 'glb' && modelUrl.includes('.fbx')) {
+          // Check specifically for OBJ files with # character
+          const isLikelyObjFile = error.message && (
+            (error.message.includes('Unexpected token') && error.message.includes('#')) ||
+            (error.message.includes('3ds Max') || error.message.includes('#'))
+          );
+          
+          // Check specifically for FBX files with Kaydara signature
+          const isLikelyFbxFile = error.message && (
+            (error.message.includes('Unexpected token') && error.message.includes('Kaydara FB')) ||
+            error.message.includes('Kaydara FBX')
+          );
+          
+          if (isLikelyFbxFile) {
+            // This is very likely an FBX file - try FBXLoader directly
+            addDebugInfo('Detected FBX file format from error message (Kaydara). Trying FBXLoader...');
+            setDetectedExtension('fbx');
+            const fbxLoader = new FBXLoader();
+            fbxLoader.load(
+              modelUrl,
+              (object) => processLoadedModel(object),
+              onProgress,
+              (fbxError) => {
+                setModelError(`Failed to load 3D model: ${fbxError.message}`);
+                setModelLoading(false);
+                addDebugInfo(`Error with FBXLoader: ${fbxError.message}`);
+              }
+            );
+          } else if (isLikelyObjFile) {
+            // This is very likely an OBJ file - try OBJ loader directly
+            addDebugInfo('Detected OBJ file format from error message (# character). Trying OBJLoader...');
+            setDetectedExtension('obj');
+            const objLoader = new OBJLoader();
+            objLoader.load(
+              modelUrl,
+              (object) => processLoadedModel(object),
+              onProgress,
+              (objError) => {
+                setModelError(`Failed to load 3D model: ${objError.message}`);
+                setModelLoading(false);
+                addDebugInfo(`Error with OBJLoader: ${objError.message}`);
+              }
+            );
+          } else if (isJsonError && extension === 'glb' && modelUrl.includes('.fbx')) {
             // Try FBX loader as fallback
             addDebugInfo('JSON parse error detected. Trying FBXLoader as fallback...');
             setDetectedExtension('fbx');
