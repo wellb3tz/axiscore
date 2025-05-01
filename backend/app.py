@@ -261,7 +261,7 @@ def webhook():
                     if failed_archive:
                         print(f"Archive {file_id} previously failed with error: {failed_archive[0]}")
                         send_message(chat_id, f"This archive couldn't be processed previously. Error: {failed_archive[0]}", TELEGRAM_BOT_TOKEN)
-                        return jsonify({"status": "error", "msg": "Archive previously failed"}), 400
+                        return jsonify({"status": "error", "msg": "Archive previously failed"}), 200
                     
                     # Send a message to inform the user we're processing the archive
                     send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
