@@ -144,6 +144,18 @@ def webhook():
         chat_id = message.get('chat', {}).get('id')
         text = message.get('text', '')
         
+        # Check if IGNORE_ALL_ARCHIVES is active BEFORE any other processing, regardless of command
+        # This ensures that if a previous emergency command was processed, we immediately respect it
+        if IGNORE_ALL_ARCHIVES and message.get('document'):
+            file_name = message.get('document', {}).get('file_name', 'unknown file')
+            print(f"EMERGENCY STOP ACTIVE - ignoring file {file_name}")
+            try:
+                if chat_id:
+                    send_message(chat_id, "🚨 Processing is currently disabled. Use /enable to re-enable processing.", TELEGRAM_BOT_TOKEN)
+            except Exception as e:
+                print(f"Error sending message: {e}")
+            return jsonify({"status": "stopped", "message": "Processing is disabled"}), 200
+        
         # EMERGENCY ESCAPE HATCH - Check for emergency command before anything else
         # Process this in a separate try block to ensure it runs even if other parts fail
         try:
@@ -334,7 +346,17 @@ def webhook():
                             cleanup_extraction(extract_path)
                             os.remove(temp_file_path)
                             clear_processing_state(file_id)
-                            return jsonify({"status": "error", "msg": "No 3D model files found"}), 400
+                            # Record failed archive in database to prevent reprocessing loops
+                            try:
+                                db.execute(
+                                    "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
+                                    (file_id, file_name, 'no 3D model files found', chat_id)
+                                )
+                                db.commit()
+                            except Exception as e:
+                                print(f"Error recording failed archive: {e}")
+                            
+                            return jsonify({"status": "error", "msg": "No 3D model files found"}), 200
                         
                         print(f"Found {len(model_files)} 3D model files in archive:")
                         for model in model_files:
