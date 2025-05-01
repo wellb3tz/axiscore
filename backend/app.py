@@ -148,7 +148,7 @@ def webhook():
         # Process this in a separate try block to ensure it runs even if other parts fail
         try:
             if text and chat_id:
-                if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all' or text.lower() == '/emergency_stop':
+                if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all' or text.lower() == '/emergency_stop' or text.lower() == '/emergency':
                     # This is a nuclear option that will be processed even during loops
                     IGNORE_ALL_ARCHIVES = True
                     
@@ -266,8 +266,18 @@ def webhook():
                         else:
                             print("Failed to download archive from Telegram")
                             send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                            # Record failed archive to prevent retry loops
+                            try:
+                                db.execute(
+                                    "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
+                                    (file_id, file_name, 'download failed', chat_id)
+                                )
+                                db.commit()
+                            except Exception:
+                                pass
                             clear_processing_state(file_id)
-                            return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                            # Return 200 so Telegram does not retry this update
+                            return jsonify({"status": "error", "msg": "Failed to download file"}), 200
                     
                     print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
                     
@@ -523,8 +533,18 @@ def webhook():
                         else:
                             print("Failed to download file from Telegram")
                             send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                            # Record failed file to prevent retry loops
+                            try:
+                                db.execute(
+                                    "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
+                                    (file_id, file_name, 'download failed', chat_id)
+                                )
+                                db.commit()
+                            except Exception:
+                                pass
                             clear_processing_state(file_id)
-                            return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                            # Return 200 so Telegram does not retry this update
+                            return jsonify({"status": "error", "msg": "Failed to download file"}), 200
                     
                     print(f"File downloaded successfully, size: {file_data['size']} bytes")
                     # Add telegram_id to file_data for tracking
