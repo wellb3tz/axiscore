@@ -148,7 +148,7 @@ def webhook():
         # Process this in a separate try block to ensure it runs even if other parts fail
         try:
             if text and chat_id:
-                if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all' or text.lower() == '/emergency_stop' or text.lower() == '/emergency':
+                if text.lower() == '/911':
                     # This is a nuclear option that will be processed even during loops
                     IGNORE_ALL_ARCHIVES = True
                     
@@ -677,12 +677,12 @@ Axiscore 3D Model Viewer Help:
                     LAST_RESET_TIME = current_time
                 else:
                     response_text = "Could not reset due to database connection issues. Please try again later."
-            elif text.lower() == '/enable_archives':
+            elif text.lower() == '/enable':
                 IGNORE_ALL_ARCHIVES = False
-                response_text = "Archive processing has been re-enabled."
-            elif text.lower() == '/disable_archives':
+                response_text = "Processing has been re-enabled."
+            elif text.lower() == '/disable':
                 IGNORE_ALL_ARCHIVES = True
-                response_text = "Archive processing has been disabled (circuit breaker active)."
+                response_text = "Processing has been disabled (circuit breaker active)."
             elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
                 # Special admin command to initialize the failed_archives table and add problematic files
                 if db.ensure_connection():
@@ -733,25 +733,24 @@ Axiscore 3D Model Viewer Help:
 Commands:
 - /reset - Clear processing queue and failed archives
 - /status - Show this status message"""
-            elif text.lower().startswith('/clear ') and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-                # Allow admins to clear specific file_id
-                try:
-                    file_id = text.split(' ')[1].strip()
-                    if file_id in PROCESSING_FILES:
-                        clear_processing_state(file_id)
-                        response_text = f"Cleared processing lock for file: {file_id}"
-                    else:
-                        response_text = f"File ID not found in processing list: {file_id}"
-                except:
-                    response_text = "Usage: /clear file_id"
-            elif text.lower() == '/debug_help' or text.lower() == '/emergency':
-                # Emergency help when bot is stuck in a loop
-                response_text = """🚨 EMERGENCY COMMANDS:
+            elif text.lower() == '/debug':
+                # Show all available commands and their descriptions
+                response_text = """⚙️ AXISCORE BOT COMMANDS:
 
-If the bot is stuck in a processing loop, use one of these commands:
-• /911 or /sos or /stop_all - Emergency stop (breaks any processing loop)
+Standard Commands:
+• /start - Display welcome message and introduction
+• /help - Show how to use the bot and available features
+• /enable - Turn on file processing
+• /disable - Turn off file processing (circuit breaker)
 • /reset - Clear failed archives and reset processing state
-• /status - Show current processing status
+• /status - Show system status (processing files, circuit breaker state)
+• /debug - Show this help message with all commands
+
+Emergency Commands:
+• /911 - Emergency stop (breaks any processing loop)
+
+Admin Commands:
+• /admin_cleanup - Initialize database tables (admin only)
 
 These commands work even when the bot appears stuck. If the bot is completely unresponsive, please contact the administrator."""
             else:
