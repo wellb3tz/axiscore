@@ -119,19 +119,6 @@ def webhook():
     # Declare all globals at the beginning of the function
     global IGNORE_ALL_ARCHIVES, LAST_RESET_TIME
     
-    # Clean up any stale processing locks
-    current_time = datetime.now().timestamp()
-    stale_files = []
-    for file_id in PROCESSING_FILES:
-        start_time = PROCESSING_TIMES.get(file_id, 0)
-        if current_time - start_time > MAX_PROCESSING_TIME:
-            stale_files.append(file_id)
-    
-    # Remove stale files
-    for file_id in stale_files:
-        clear_processing_state(file_id)
-        print(f"Automatically cleared stale processing lock for file: {file_id}")
-    
     # If it's a GET request, just return a simple status
     if request.method == 'GET':
         return jsonify({
@@ -146,6 +133,46 @@ def webhook():
     message = data.get('message', {})
     chat_id = message.get('chat', {}).get('id')
     text = message.get('text', '')
+    
+    # EMERGENCY ESCAPE HATCH - Check for emergency command before anything else
+    if text and chat_id:
+        if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all':
+            # This is a nuclear option that will be processed even during loops
+            IGNORE_ALL_ARCHIVES = True
+            
+            # Clear ALL processing
+            file_ids_to_remove = list(PROCESSING_FILES)
+            for file_id in file_ids_to_remove:
+                clear_processing_state(file_id)
+                
+            # Clear ALL failed archives if DB is available
+            try:
+                if db.ensure_connection():
+                    db.execute("DELETE FROM failed_archives")
+                    db.commit()
+            except:
+                pass  # Ignore DB errors during emergency stop
+                
+            # Send direct response to show the command was accepted
+            try:
+                send_message(chat_id, "🚨 EMERGENCY STOP EXECUTED! All processing has been halted.", TELEGRAM_BOT_TOKEN)
+            except:
+                pass  # Even if sending fails, continue with the stop
+                
+            return jsonify({"status": "ok", "message": "Emergency stop executed"}), 200
+    
+    # Clean up any stale processing locks
+    current_time = datetime.now().timestamp()
+    stale_files = []
+    for file_id in PROCESSING_FILES:
+        start_time = PROCESSING_TIMES.get(file_id, 0)
+        if current_time - start_time > MAX_PROCESSING_TIME:
+            stale_files.append(file_id)
+    
+    # Remove stale files
+    for file_id in stale_files:
+        clear_processing_state(file_id)
+        print(f"Automatically cleared stale processing lock for file: {file_id}")
     
     if not chat_id:
         return jsonify({"status": "error", "msg": "No chat_id found"}), 400
@@ -450,6 +477,7 @@ def webhook():
                 if not db.ensure_connection():
                     print("Database connection unavailable, cannot process model")
                     send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
+                    clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                     
                 file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN)
@@ -665,20 +693,30 @@ Commands:
             file_ids_to_remove = list(PROCESSING_FILES)
             for file_id in file_ids_to_remove:
                 clear_processing_state(file_id)
-                
+            
             # Clear ALL failed archives
             if db.ensure_connection():
                 db.execute("DELETE FROM failed_archives")
                 db.commit()
-                
+            
             response_text = f"🚨 EMERGENCY STOP executed! All archive processing disabled and {len(file_ids_to_remove)} processing locks cleared. Use /enable_archives to re-enable when safe."
+        elif text.lower() == '/debug_help' or text.lower() == '/emergency':
+            # Emergency help when bot is stuck in a loop
+            response_text = """🚨 EMERGENCY COMMANDS:
+
+If the bot is stuck in a processing loop, use one of these commands:
+• /911 or /sos or /stop_all - Emergency stop (breaks any processing loop)
+• /reset - Clear failed archives and reset processing state
+• /status - Show current processing status
+
+These commands work even when the bot appears stuck. If the bot is completely unresponsive, please contact the administrator."""
         else:
             # Generic response for other messages
             response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
         
         send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
-    
-    return jsonify({"status": "ok"}), 200
+        
+        return jsonify({"status": "ok"}), 200
 
 @app.route('/view', methods=['GET'])
 def view_model():
