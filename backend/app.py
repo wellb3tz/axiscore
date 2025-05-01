@@ -230,13 +230,19 @@ def webhook():
                 send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
                 
                 # Download file from Telegram
-                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN)
+                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
                 
                 if not file_data:
-                    print("Failed to download archive from Telegram")
-                    send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
-                    clear_processing_state(file_id)
-                    return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                    if IGNORE_ALL_ARCHIVES:
+                        print(f"Emergency stop active - skipping download for file: {file_id}")
+                        send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
+                        return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
+                    else:
+                        print("Failed to download archive from Telegram")
+                        send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
+                        return jsonify({"status": "error", "msg": "Failed to download file"}), 500
                 
                 print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
                 
@@ -480,86 +486,94 @@ def webhook():
                     clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                     
-                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN)
+                # Download file from Telegram with emergency flag
+                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
                 
-                if file_data:
-                    print(f"File downloaded successfully, size: {file_data['size']} bytes")
-                    # Add telegram_id to file_data for tracking
-                    file_data['telegram_id'] = chat_id
-                    # Save to storage and get URL
-                    model_url = db.save_model(file_data, BASE_URL)
-                    
-                    if model_url:
-                        print(f"Model saved successfully, URL: {model_url}")
-                        # Get the bot username for creating the Mini App URL
-                        bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
-                        bot_username = bot_info.get('username', '') if bot_info else ''
-                        
-                        # Extract UUID from model_url for a cleaner parameter
-                        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-                        uuid_match = re.search(uuid_pattern, model_url)
-                        model_uuid = uuid_match.group(1) if uuid_match else "unknown"
-                        
-                        # Extract file extension to ensure proper loading
-                        file_extension = os.path.splitext(file_name)[1].lower()
-                        
-                        # Create multiple Telegram link formats for better compatibility
-                        # Format 1: Standard t.me link with startapp parameter
-                        # This format is supposed to pass the parameter via start_param but might not be working correctly
-                        # miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
-                        
-                        # Using a different format that might be more compatible with Telegram WebApps
-                        # Instead of using startapp, use a format that focuses on the bot username with the WebApp command
-                        miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
-                        
-                        # Format 2: Direct link to the miniapp with UUID in the query
-                        direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
-                        
-                        # Format 3: Direct link to the miniapp with model parameter
-                        model_direct_url = f"{BASE_URL}/miniapp?model={model_url}"
-                        
-                        # For debugging, log the URLs
-                        print(f"Generated Mini App URL: {miniapp_url}")
-                        print(f"Generated direct miniapp URL: {direct_miniapp_url}")
-                        print(f"Generated model direct URL: {model_direct_url}")
-                        print(f"File extension: {file_extension}")
-                        
-                        # Send message with options
-                        response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
-                        
-                        # Create a combined keyboard with both options
-                        keyboard = {
-                            'inline_keyboard': [
-                                [
-                                    {
-                                        'text': '📱 Open in Axiscore (Recommended)',
-                                        'web_app': {
-                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
-                                        }
-                                    }
-                                ],
-                                [
-                                    {
-                                        'text': '🌐 Open in Browser',
-                                        'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
-                                    }
-                                ]
-                            ]
-                        }
-                        
-                        # Send the message with combined keyboard
-                        send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
-                        
-                        # Remove from processing set after success
+                if not file_data:
+                    if IGNORE_ALL_ARCHIVES:
+                        print(f"Emergency stop active - skipping download for file: {file_id}")
+                        send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
                         clear_processing_state(file_id)
-                        return jsonify({"status": "ok"}), 200
+                        return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
                     else:
-                        print("Failed to save model to storage")
-                        send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
+                        print("Failed to download file from Telegram")
+                        send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
                         clear_processing_state(file_id)
+                        return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                
+                print(f"File downloaded successfully, size: {file_data['size']} bytes")
+                # Add telegram_id to file_data for tracking
+                file_data['telegram_id'] = chat_id
+                # Save to storage and get URL
+                model_url = db.save_model(file_data, BASE_URL)
+                
+                if model_url:
+                    print(f"Model saved successfully, URL: {model_url}")
+                    # Get the bot username for creating the Mini App URL
+                    bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
+                    bot_username = bot_info.get('username', '') if bot_info else ''
+                    
+                    # Extract UUID from model_url for a cleaner parameter
+                    uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                    uuid_match = re.search(uuid_pattern, model_url)
+                    model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                    
+                    # Extract file extension to ensure proper loading
+                    file_extension = os.path.splitext(file_name)[1].lower()
+                    
+                    # Create multiple Telegram link formats for better compatibility
+                    # Format 1: Standard t.me link with startapp parameter
+                    # This format is supposed to pass the parameter via start_param but might not be working correctly
+                    # miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
+                    
+                    # Using a different format that might be more compatible with Telegram WebApps
+                    # Instead of using startapp, use a format that focuses on the bot username with the WebApp command
+                    miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
+                    
+                    # Format 2: Direct link to the miniapp with UUID in the query
+                    direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                    
+                    # Format 3: Direct link to the miniapp with model parameter
+                    model_direct_url = f"{BASE_URL}/miniapp?model={model_url}"
+                    
+                    # For debugging, log the URLs
+                    print(f"Generated Mini App URL: {miniapp_url}")
+                    print(f"Generated direct miniapp URL: {direct_miniapp_url}")
+                    print(f"Generated model direct URL: {model_direct_url}")
+                    print(f"File extension: {file_extension}")
+                    
+                    # Send message with options
+                    response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
+                    
+                    # Create a combined keyboard with both options
+                    keyboard = {
+                        'inline_keyboard': [
+                            [
+                                {
+                                    'text': '📱 Open in Axiscore (Recommended)',
+                                    'web_app': {
+                                        'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                                    }
+                                }
+                            ],
+                            [
+                                {
+                                    'text': '🌐 Open in Browser',
+                                    'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
+                                }
+                            ]
+                        ]
+                    }
+                    
+                    # Send the message with combined keyboard
+                    send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
+                    
+                    # Remove from processing set after success
+                    clear_processing_state(file_id)
+                    return jsonify({"status": "ok"}), 200
                 else:
-                    print("Failed to download file from Telegram")
-                    send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                    print("Failed to save model to storage")
+                    send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
                     clear_processing_state(file_id)
             except psycopg2.Error as dbe:
                 print(f"Database error processing 3D model: {dbe}")

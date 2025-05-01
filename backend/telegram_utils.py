@@ -89,17 +89,23 @@ def send_webapp_button(chat_id, text, keyboard, bot_token):
     }
     return requests.post(url, json=payload)
 
-def download_telegram_file(file_id, bot_token):
+def download_telegram_file(file_id, bot_token, emergency_flag=False):
     """
     Download a file from Telegram servers using its file_id and return content.
     
     Args:
         file_id: The file_id to download
         bot_token: The Telegram bot token
+        emergency_flag: If True, will bypass download (emergency stop)
         
     Returns:
         dict: A dictionary containing the file data, or None if download failed
     """
+    # Check emergency flag first - bypass download if active
+    if emergency_flag:
+        print(f"Emergency flag active - bypassing download for file: {file_id}")
+        return None
+        
     try:
         # Get file path from Telegram
         file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
