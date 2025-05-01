@@ -84,6 +84,15 @@ MAX_PROCESSING_TIME = 300  # seconds (5 minutes) before automatically clearing a
 IGNORE_ALL_ARCHIVES = False
 LAST_RESET_TIME = 0
 
+# Perform initialization clean-up on app startup
+print("🚀 Starting application - performing initialization cleanup")
+# Reset processing state on app startup to prevent stale state
+PROCESSING_FILES.clear()
+PROCESSING_TIMES.clear()
+# Ensure circuit breaker is off on fresh start
+IGNORE_ALL_ARCHIVES = False
+print(f"✅ Processing state reset: files={len(PROCESSING_FILES)}, circuit breaker={IGNORE_ALL_ARCHIVES}")
+
 # Helper function to clean up processing state
 def clear_processing_state(file_id):
     """Remove a file from processing tracking"""
@@ -127,307 +136,281 @@ def webhook():
         })
     
     # Handle POST request (actual webhook)
-    data = request.json
-    
-    # Extract message data
-    message = data.get('message', {})
-    chat_id = message.get('chat', {}).get('id')
-    text = message.get('text', '')
-    
-    # EMERGENCY ESCAPE HATCH - Check for emergency command before anything else
-    if text and chat_id:
-        if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all':
-            # This is a nuclear option that will be processed even during loops
-            IGNORE_ALL_ARCHIVES = True
-            
-            # Clear ALL processing
-            file_ids_to_remove = list(PROCESSING_FILES)
-            for file_id in file_ids_to_remove:
-                clear_processing_state(file_id)
-                
-            # Clear ALL failed archives if DB is available
-            try:
-                if db.ensure_connection():
-                    db.execute("DELETE FROM failed_archives")
-                    db.commit()
-            except:
-                pass  # Ignore DB errors during emergency stop
-                
-            # Send direct response to show the command was accepted
-            try:
-                send_message(chat_id, "🚨 EMERGENCY STOP EXECUTED! All processing has been halted.", TELEGRAM_BOT_TOKEN)
-            except:
-                pass  # Even if sending fails, continue with the stop
-                
-            return jsonify({"status": "ok", "message": "Emergency stop executed"}), 200
-    
-    # Clean up any stale processing locks
-    current_time = datetime.now().timestamp()
-    stale_files = []
-    for file_id in PROCESSING_FILES:
-        start_time = PROCESSING_TIMES.get(file_id, 0)
-        if current_time - start_time > MAX_PROCESSING_TIME:
-            stale_files.append(file_id)
-    
-    # Remove stale files
-    for file_id in stale_files:
-        clear_processing_state(file_id)
-        print(f"Automatically cleared stale processing lock for file: {file_id}")
-    
-    if not chat_id:
-        return jsonify({"status": "error", "msg": "No chat_id found"}), 400
-    
-    # Check if message contains a document (file)
-    if message.get('document'):
-        document = message.get('document')
-        file_name = document.get('file_name', '')
-        file_id = document.get('file_id')
-        mime_type = document.get('mime_type', '')
+    try:
+        data = request.json
         
-        # Check if it's an archive file
-        if file_name.lower().endswith(('.rar', '.zip', '.7z')):
-            # Emergency circuit breaker - if we're in ignore mode for archives
-            if IGNORE_ALL_ARCHIVES:
-                print(f"IGNORED ARCHIVE due to circuit breaker: {file_name}, ID: {file_id}")
-                return jsonify({"status": "ignored", "msg": "Archives temporarily disabled"}), 200
-                
-            # Process archive file
-            try:
-                print(f"Processing archive: {file_name}, ID: {file_id}")
-                
-                # Print raw data for debugging
-                print(f"DEBUG - Message data: {json.dumps(message, indent=2)}")
-                
-                # Check if this file is already being processed (prevents loops)
-                if file_id in PROCESSING_FILES:
-                    print(f"File {file_id} is already being processed, ignoring duplicate webhook")
-                    return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
-                
-                # Add to processing set
-                PROCESSING_FILES.add(file_id)
-                PROCESSING_TIMES[file_id] = datetime.now().timestamp()
-                
-                # Ensure database connection before proceeding
-                if not db.ensure_connection():
-                    print("Database connection unavailable, cannot process archive")
-                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
-                    clear_processing_state(file_id)
-                    return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
-                
-                # Check if file was already processed and failed before
-                failed_archive = db.execute(
-                    "SELECT error FROM failed_archives WHERE file_id = %s",
-                    (file_id,),
-                    fetch='one'
-                )
-                
-                if failed_archive:
-                    print(f"Archive {file_id} previously failed with error: {failed_archive[0]}")
-                    send_message(chat_id, f"This archive couldn't be processed previously. Error: {failed_archive[0]}", TELEGRAM_BOT_TOKEN)
-                    return jsonify({"status": "error", "msg": "Archive previously failed"}), 400
-                
-                # Send a message to inform the user we're processing the archive
-                send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
-                
-                # Download file from Telegram
-                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
-                
-                if not file_data:
-                    if IGNORE_ALL_ARCHIVES:
-                        print(f"Emergency stop active - skipping download for file: {file_id}")
-                        send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
+        # Extract message data
+        message = data.get('message', {})
+        chat_id = message.get('chat', {}).get('id')
+        text = message.get('text', '')
+        
+        # EMERGENCY ESCAPE HATCH - Check for emergency command before anything else
+        # Process this in a separate try block to ensure it runs even if other parts fail
+        try:
+            if text and chat_id:
+                if text.lower() == '/911' or text.lower() == '/sos' or text.lower() == '/stop_all' or text.lower() == '/emergency_stop':
+                    # This is a nuclear option that will be processed even during loops
+                    IGNORE_ALL_ARCHIVES = True
+                    
+                    # Clear ALL processing
+                    file_ids_to_remove = list(PROCESSING_FILES)
+                    for file_id in file_ids_to_remove:
                         clear_processing_state(file_id)
-                        return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
-                    else:
-                        print("Failed to download archive from Telegram")
-                        send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
-                        clear_processing_state(file_id)
-                        return jsonify({"status": "error", "msg": "Failed to download file"}), 500
-                
-                print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
-                
-                # Save the archive to a temporary file
-                temp_file_path = os.path.join(UPLOAD_FOLDER, f"temp_archive_{uuid.uuid4()}{os.path.splitext(file_name)[1]}")
+                    
+                    # Print confirmation to server logs
+                    print(f"🚨 EMERGENCY STOP triggered by user {chat_id} with command {text}")
+                    
+                    # Clear ALL failed archives if DB is available
+                    try:
+                        if db.ensure_connection():
+                            db.execute("DELETE FROM failed_archives")
+                            db.commit()
+                    except Exception as db_err:
+                        print(f"Non-critical DB error during emergency stop: {db_err}")
+                    
+                    # Send direct response to show the command was accepted
+                    try:
+                        send_message(chat_id, "🚨 EMERGENCY STOP EXECUTED! All processing has been halted.", TELEGRAM_BOT_TOKEN)
+                    except Exception as msg_err:
+                        print(f"Error sending emergency confirmation: {msg_err}")
+                    
+                    return jsonify({"status": "ok", "message": "Emergency stop executed"}), 200
+        except Exception as emergency_err:
+            print(f"Error processing emergency command: {emergency_err}")
+            # Still try to return a response
+            if chat_id:
                 try:
-                    # Decode base64 content
-                    archive_content = base64.b64decode(file_data['content'])
+                    send_message(chat_id, "Error processing emergency command. Please contact administrator.", TELEGRAM_BOT_TOKEN)
+                except:
+                    pass
+            return jsonify({"status": "error", "message": f"Emergency command error: {str(emergency_err)}"}), 500
+        
+        # Rest of the webhook processing
+        # Clean up any stale processing locks
+        current_time = datetime.now().timestamp()
+        stale_files = []
+        for file_id in PROCESSING_FILES:
+            start_time = PROCESSING_TIMES.get(file_id, 0)
+            if current_time - start_time > MAX_PROCESSING_TIME:
+                stale_files.append(file_id)
+        
+        # Remove stale files
+        for file_id in stale_files:
+            clear_processing_state(file_id)
+            print(f"Automatically cleared stale processing lock for file: {file_id}")
+    
+        if not chat_id:
+            return jsonify({"status": "error", "msg": "No chat_id found"}), 400
+        
+        # Check if message contains a document (file)
+        if message.get('document'):
+            document = message.get('document')
+            file_name = document.get('file_name', '')
+            file_id = document.get('file_id')
+            mime_type = document.get('mime_type', '')
+            
+            # Check if it's an archive file
+            if file_name.lower().endswith(('.rar', '.zip', '.7z')):
+                # Emergency circuit breaker - if we're in ignore mode for archives
+                if IGNORE_ALL_ARCHIVES:
+                    print(f"IGNORED ARCHIVE due to circuit breaker: {file_name}, ID: {file_id}")
+                    return jsonify({"status": "ignored", "msg": "Archives temporarily disabled"}), 200
                     
-                    # Write to temporary file
-                    with open(temp_file_path, 'wb') as f:
-                        f.write(archive_content)
+                # Process archive file
+                try:
+                    print(f"Processing archive: {file_name}, ID: {file_id}")
                     
-                    print(f"Archive saved to temporary file: {temp_file_path}")
+                    # Print raw data for debugging
+                    print(f"DEBUG - Message data: {json.dumps(message, indent=2)}")
                     
-                    # Extract the archive
-                    extract_result = extract_archive(temp_file_path)
+                    # Check if this file is already being processed (prevents loops)
+                    if file_id in PROCESSING_FILES:
+                        print(f"File {file_id} is already being processed, ignoring duplicate webhook")
+                        return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
                     
-                    if not extract_result['success']:
-                        error_msg = extract_result['error']
-                        # Provide more specific message for encoding issues
-                        user_msg = "Failed to process your archive."
-                        if "utf-8" in error_msg.lower() and "decode" in error_msg.lower():
-                            user_msg = "Your archive contains files with unsupported encoding. Please ensure all filenames use Latin characters (a-z) without special characters."
-                        
-                        # Record failed archive in database to prevent reprocessing loops
-                        db.execute(
-                            "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s)",
-                            (file_id, file_name, error_msg, chat_id)
-                        )
-                        db.commit()
-                        
-                        send_message(chat_id, f"{user_msg} To try again with a different archive, use the /reset command first.", TELEGRAM_BOT_TOKEN)
+                    # Add to processing set
+                    PROCESSING_FILES.add(file_id)
+                    PROCESSING_TIMES[file_id] = datetime.now().timestamp()
+                    
+                    # Ensure database connection before proceeding
+                    if not db.ensure_connection():
+                        print("Database connection unavailable, cannot process archive")
+                        send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
                         clear_processing_state(file_id)
-                        raise Exception(f"Failed to extract archive: {error_msg}")
+                        return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
                     
-                    # Find 3D model files in the extracted directory
-                    extract_path = extract_result['extract_path']
-                    files_found = extract_result['files']
+                    # Check if file was already processed and failed before
+                    failed_archive = db.execute(
+                        "SELECT error FROM failed_archives WHERE file_id = %s",
+                        (file_id,),
+                        fetch='one'
+                    )
                     
-                    print(f"Extracted {len(files_found)} files from archive")
+                    if failed_archive:
+                        print(f"Archive {file_id} previously failed with error: {failed_archive[0]}")
+                        send_message(chat_id, f"This archive couldn't be processed previously. Error: {failed_archive[0]}", TELEGRAM_BOT_TOKEN)
+                        return jsonify({"status": "error", "msg": "Archive previously failed"}), 400
                     
-                    # Find 3D model files
-                    model_files = find_3d_model_files(files_found)
+                    # Send a message to inform the user we're processing the archive
+                    send_message(chat_id, f"Processing archive: {file_name}. This may take a moment...", TELEGRAM_BOT_TOKEN)
                     
-                    if not model_files:
-                        print("No 3D model files found in archive")
-                        send_message(
-                            chat_id, 
-                            "No 3D model files (.glb, .gltf, .fbx, .obj) found in your archive. Please upload a valid archive containing 3D models.", 
-                            TELEGRAM_BOT_TOKEN
-                        )
+                    # Download file from Telegram
+                    file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
+                    
+                    if not file_data:
+                        if IGNORE_ALL_ARCHIVES:
+                            print(f"Emergency stop active - skipping download for file: {file_id}")
+                            send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
+                        else:
+                            print("Failed to download archive from Telegram")
+                            send_message(chat_id, "Failed to download your archive from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "error", "msg": "Failed to download file"}), 500
+                    
+                    print(f"Archive downloaded successfully, size: {file_data['size']} bytes")
+                    
+                    # Save the archive to a temporary file
+                    temp_file_path = os.path.join(UPLOAD_FOLDER, f"temp_archive_{uuid.uuid4()}{os.path.splitext(file_name)[1]}")
+                    try:
+                        # Decode base64 content
+                        archive_content = base64.b64decode(file_data['content'])
+                        
+                        # Write to temporary file
+                        with open(temp_file_path, 'wb') as f:
+                            f.write(archive_content)
+                        
+                        print(f"Archive saved to temporary file: {temp_file_path}")
+                        
+                        # Extract the archive
+                        extract_result = extract_archive(temp_file_path)
+                        
+                        if not extract_result['success']:
+                            error_msg = extract_result['error']
+                            # Provide more specific message for encoding issues
+                            user_msg = "Failed to process your archive."
+                            if "utf-8" in error_msg.lower() and "decode" in error_msg.lower():
+                                user_msg = "Your archive contains files with unsupported encoding. Please ensure all filenames use Latin characters (a-z) without special characters."
+                            
+                            # Record failed archive in database to prevent reprocessing loops
+                            db.execute(
+                                "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s)",
+                                (file_id, file_name, error_msg, chat_id)
+                            )
+                            db.commit()
+                            
+                            send_message(chat_id, f"{user_msg} To try again with a different archive, use the /reset command first.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            raise Exception(f"Failed to extract archive: {error_msg}")
+                        
+                        # Find 3D model files in the extracted directory
+                        extract_path = extract_result['extract_path']
+                        files_found = extract_result['files']
+                        
+                        print(f"Extracted {len(files_found)} files from archive")
+                        
+                        # Find 3D model files
+                        model_files = find_3d_model_files(files_found)
+                        
+                        if not model_files:
+                            print("No 3D model files found in archive")
+                            send_message(
+                                chat_id, 
+                                "No 3D model files (.glb, .gltf, .fbx, .obj) found in your archive. Please upload a valid archive containing 3D models.", 
+                                TELEGRAM_BOT_TOKEN
+                            )
+                            # Clean up
+                            cleanup_extraction(extract_path)
+                            os.remove(temp_file_path)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "error", "msg": "No 3D model files found"}), 400
+                        
+                        print(f"Found {len(model_files)} 3D model files in archive:")
+                        for model in model_files:
+                            print(f"- {model['filename']} ({model['extension']})")
+                        
+                        # If multiple model files are found, ask the user which one to use
+                        if len(model_files) > 1:
+                            # Inform user about the found models
+                            model_list = "\n".join([f"{i+1}. {m['filename']}" for i, m in enumerate(model_files)])
+                            message_text = f"Found {len(model_files)} 3D models in your archive:\n\n{model_list}\n\nProcessing all models..."
+                            send_message(chat_id, message_text, TELEGRAM_BOT_TOKEN)
+                        
+                        # Process each model file
+                        processed_models = []
+                        for model_file in model_files:
+                            model_path = os.path.join(extract_path, model_file['path'])
+                            model_filename = model_file['filename']
+                            model_ext = model_file['extension']
+                            
+                            print(f"Processing model: {model_filename}")
+                            
+                            # Read the model file
+                            with open(model_path, 'rb') as f:
+                                model_content = f.read()
+                            
+                            # Convert to base64 for storage
+                            model_base64 = base64.b64encode(model_content).decode('utf-8')
+                            
+                            # Create file data structure similar to what download_telegram_file returns
+                            model_data = {
+                                'filename': model_filename,
+                                'content': model_base64,
+                                'size': len(model_content),
+                                'mime_type': f'model/{model_ext[1:]}',  # .glb -> model/glb
+                                'telegram_id': chat_id
+                            }
+                            
+                            # Save to storage and get URL
+                            model_url = db.save_model(model_data, BASE_URL)
+                            
+                            if model_url:
+                                processed_models.append({
+                                    'filename': model_filename,
+                                    'url': model_url,
+                                    'extension': model_ext
+                                })
+                                print(f"Model {model_filename} saved successfully, URL: {model_url}")
+                            else:
+                                print(f"Failed to save model {model_filename} to storage")
+                        
                         # Clean up
                         cleanup_extraction(extract_path)
                         os.remove(temp_file_path)
-                        clear_processing_state(file_id)
-                        return jsonify({"status": "error", "msg": "No 3D model files found"}), 400
-                    
-                    print(f"Found {len(model_files)} 3D model files in archive:")
-                    for model in model_files:
-                        print(f"- {model['filename']} ({model['extension']})")
-                    
-                    # If multiple model files are found, ask the user which one to use
-                    if len(model_files) > 1:
-                        # Inform user about the found models
-                        model_list = "\n".join([f"{i+1}. {m['filename']}" for i, m in enumerate(model_files)])
-                        message_text = f"Found {len(model_files)} 3D models in your archive:\n\n{model_list}\n\nProcessing all models..."
-                        send_message(chat_id, message_text, TELEGRAM_BOT_TOKEN)
-                    
-                    # Process each model file
-                    processed_models = []
-                    for model_file in model_files:
-                        model_path = os.path.join(extract_path, model_file['path'])
-                        model_filename = model_file['filename']
-                        model_ext = model_file['extension']
                         
-                        print(f"Processing model: {model_filename}")
+                        if not processed_models:
+                            print("Failed to process any models from the archive")
+                            send_message(chat_id, "Failed to process any models from your archive. Please try again.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "error", "msg": "Failed to process models"}), 500
                         
-                        # Read the model file
-                        with open(model_path, 'rb') as f:
-                            model_content = f.read()
-                        
-                        # Convert to base64 for storage
-                        model_base64 = base64.b64encode(model_content).decode('utf-8')
-                        
-                        # Create file data structure similar to what download_telegram_file returns
-                        model_data = {
-                            'filename': model_filename,
-                            'content': model_base64,
-                            'size': len(model_content),
-                            'mime_type': f'model/{model_ext[1:]}',  # .glb -> model/glb
-                            'telegram_id': chat_id
-                        }
-                        
-                        # Save to storage and get URL
-                        model_url = db.save_model(model_data, BASE_URL)
-                        
-                        if model_url:
-                            processed_models.append({
-                                'filename': model_filename,
-                                'url': model_url,
-                                'extension': model_ext
-                            })
-                            print(f"Model {model_filename} saved successfully, URL: {model_url}")
-                        else:
-                            print(f"Failed to save model {model_filename} to storage")
-                    
-                    # Clean up
-                    cleanup_extraction(extract_path)
-                    os.remove(temp_file_path)
-                    
-                    if not processed_models:
-                        print("Failed to process any models from the archive")
-                        send_message(chat_id, "Failed to process any models from your archive. Please try again.", TELEGRAM_BOT_TOKEN)
-                        clear_processing_state(file_id)
-                        return jsonify({"status": "error", "msg": "Failed to process models"}), 500
-                    
-                    # Send response to user with all processed models
-                    if len(processed_models) == 1:
-                        # Single model
-                        model = processed_models[0]
-                        model_url = model['url']
-                        model_filename = model['filename']
-                        model_ext = model['extension']
-                        
-                        # Get the bot username for creating the Mini App URL
-                        bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
-                        bot_username = bot_info.get('username', '') if bot_info else ''
-                        
-                        # Extract UUID from model_url for a cleaner parameter
-                        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-                        uuid_match = re.search(uuid_pattern, model_url)
-                        model_uuid = uuid_match.group(1) if uuid_match else "unknown"
-                        
-                        # Response message
-                        response_text = f"Extracted and processed model: {model_filename}\n\nUse one of the buttons below to view it:"
-                        
-                        # Create a combined keyboard with both options
-                        keyboard = {
-                            'inline_keyboard': [
-                                [
-                                    {
-                                        'text': '📱 Open in Axiscore (Recommended)',
-                                        'web_app': {
-                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={model_ext}"
-                                        }
-                                    }
-                                ],
-                                [
-                                    {
-                                        'text': '🌐 Open in Browser',
-                                        'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
-                                    }
-                                ]
-                            ]
-                        }
-                        
-                        # Send the message with combined keyboard
-                        send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
-                    else:
-                        # Multiple models
-                        response_text = f"Extracted and processed {len(processed_models)} models from your archive:\n\n"
-                        
-                        # Send a message for each model
-                        send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
-                        
-                        for model in processed_models:
+                        # Send response to user with all processed models
+                        if len(processed_models) == 1:
+                            # Single model
+                            model = processed_models[0]
                             model_url = model['url']
                             model_filename = model['filename']
                             model_ext = model['extension']
                             
-                            # Extract UUID from model_url
+                            # Get the bot username for creating the Mini App URL
+                            bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
+                            bot_username = bot_info.get('username', '') if bot_info else ''
+                            
+                            # Extract UUID from model_url for a cleaner parameter
                             uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
                             uuid_match = re.search(uuid_pattern, model_url)
                             model_uuid = uuid_match.group(1) if uuid_match else "unknown"
                             
-                            # Model-specific message
-                            model_text = f"Model: {model_filename}"
+                            # Response message
+                            response_text = f"Extracted and processed model: {model_filename}\n\nUse one of the buttons below to view it:"
                             
-                            # Keyboard for this model
+                            # Create a combined keyboard with both options
                             keyboard = {
                                 'inline_keyboard': [
                                     [
                                         {
-                                            'text': '📱 Open in Axiscore',
+                                            'text': '📱 Open in Axiscore (Recommended)',
                                             'web_app': {
                                                 'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={model_ext}"
                                             }
@@ -442,158 +425,200 @@ def webhook():
                                 ]
                             }
                             
-                            # Send message for this model
-                            send_webapp_button(chat_id, model_text, keyboard, TELEGRAM_BOT_TOKEN)
-                    
-                    # Remove from processing set after successful completion
-                    clear_processing_state(file_id)
-                    return jsonify({"status": "ok"}), 200
-                    
+                            # Send the message with combined keyboard
+                            send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
+                        else:
+                            # Multiple models
+                            response_text = f"Extracted and processed {len(processed_models)} models from your archive:\n\n"
+                            
+                            # Send a message for each model
+                            send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+                            
+                            for model in processed_models:
+                                model_url = model['url']
+                                model_filename = model['filename']
+                                model_ext = model['extension']
+                                
+                                # Extract UUID from model_url
+                                uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                                uuid_match = re.search(uuid_pattern, model_url)
+                                model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                                
+                                # Model-specific message
+                                model_text = f"Model: {model_filename}"
+                                
+                                # Keyboard for this model
+                                keyboard = {
+                                    'inline_keyboard': [
+                                        [
+                                            {
+                                                'text': '📱 Open in Axiscore',
+                                                'web_app': {
+                                                    'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={model_ext}"
+                                                }
+                                            }
+                                        ],
+                                        [
+                                            {
+                                                'text': '🌐 Open in Browser',
+                                                'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
+                                            }
+                                        ]
+                                    ]
+                                }
+                                
+                                # Send message for this model
+                                send_webapp_button(chat_id, model_text, keyboard, TELEGRAM_BOT_TOKEN)
+                        
+                        # Remove from processing set after successful completion
+                        clear_processing_state(file_id)
+                        return jsonify({"status": "ok"}), 200
+                        
+                    except Exception as e:
+                        print(f"Error processing archive: {e}")
+                        # Clean up any temporary files
+                        if os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+                        
+                        send_message(chat_id, f"Error processing your archive: {str(e)[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
+                        return jsonify({"status": "error", "msg": str(e)}), 500
                 except Exception as e:
                     print(f"Error processing archive: {e}")
-                    # Clean up any temporary files
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
-                    
-                    send_message(chat_id, f"Error processing your archive: {str(e)[:100]}. Please try again.", TELEGRAM_BOT_TOKEN)
+                    send_message(chat_id, "Failed to process your archive. Please try again.", TELEGRAM_BOT_TOKEN)
                     clear_processing_state(file_id)
                     return jsonify({"status": "error", "msg": str(e)}), 500
-            except Exception as e:
-                print(f"Error processing archive: {e}")
-                send_message(chat_id, "Failed to process your archive. Please try again.", TELEGRAM_BOT_TOKEN)
-                clear_processing_state(file_id)
-                return jsonify({"status": "error", "msg": str(e)}), 500
-        
-        # Check if it's a 3D model file
-        elif file_name.lower().endswith(('.glb', '.gltf', '.fbx', '.obj')) or 'model' in mime_type.lower():
-            # Download file from Telegram
-            try:
-                print(f"Processing file: {file_name}, ID: {file_id}")
-                
-                # Check if this file is already being processed (prevents loops)
-                if file_id in PROCESSING_FILES:
-                    print(f"File {file_id} is already being processed, ignoring duplicate webhook")
-                    return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
-                
-                # Add to processing set
-                PROCESSING_FILES.add(file_id)
-                PROCESSING_TIMES[file_id] = datetime.now().timestamp()
-                
-                # Ensure database connection before proceeding
-                if not db.ensure_connection():
-                    print("Database connection unavailable, cannot process model")
-                    send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
-                    clear_processing_state(file_id)
-                    return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
+            
+            # Check if it's a 3D model file
+            elif file_name.lower().endswith(('.glb', '.gltf', '.fbx', '.obj')) or 'model' in mime_type.lower():
+                # Download file from Telegram
+                try:
+                    print(f"Processing file: {file_name}, ID: {file_id}")
                     
-                # Download file from Telegram with emergency flag
-                file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
-                
-                if not file_data:
-                    if IGNORE_ALL_ARCHIVES:
-                        print(f"Emergency stop active - skipping download for file: {file_id}")
-                        send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
+                    # Check if this file is already being processed (prevents loops)
+                    if file_id in PROCESSING_FILES:
+                        print(f"File {file_id} is already being processed, ignoring duplicate webhook")
+                        return jsonify({"status": "ignored", "msg": "File already being processed"}), 200
+                    
+                    # Add to processing set
+                    PROCESSING_FILES.add(file_id)
+                    PROCESSING_TIMES[file_id] = datetime.now().timestamp()
+                    
+                    # Ensure database connection before proceeding
+                    if not db.ensure_connection():
+                        print("Database connection unavailable, cannot process model")
+                        send_message(chat_id, "Sorry, our database is currently unavailable. Please try again later.", TELEGRAM_BOT_TOKEN)
                         clear_processing_state(file_id)
-                        return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
-                    else:
-                        print("Failed to download file from Telegram")
-                        send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
-                        clear_processing_state(file_id)
-                        return jsonify({"status": "error", "msg": "Failed to download file"}), 500
-                
-                print(f"File downloaded successfully, size: {file_data['size']} bytes")
-                # Add telegram_id to file_data for tracking
-                file_data['telegram_id'] = chat_id
-                # Save to storage and get URL
-                model_url = db.save_model(file_data, BASE_URL)
-                
-                if model_url:
-                    print(f"Model saved successfully, URL: {model_url}")
-                    # Get the bot username for creating the Mini App URL
-                    bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
-                    bot_username = bot_info.get('username', '') if bot_info else ''
+                        return jsonify({"status": "error", "msg": "Database connection unavailable"}), 500
+                        
+                    # Download file from Telegram with emergency flag
+                    file_data = download_telegram_file(file_id, TELEGRAM_BOT_TOKEN, IGNORE_ALL_ARCHIVES)
                     
-                    # Extract UUID from model_url for a cleaner parameter
-                    uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-                    uuid_match = re.search(uuid_pattern, model_url)
-                    model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                    if not file_data:
+                        if IGNORE_ALL_ARCHIVES:
+                            print(f"Emergency stop active - skipping download for file: {file_id}")
+                            send_message(chat_id, "🚨 Emergency stop is active. Processing has been canceled.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "stopped", "msg": "Processing stopped due to emergency command"}), 200
+                        else:
+                            print("Failed to download file from Telegram")
+                            send_message(chat_id, "Failed to download your file from Telegram. Please try again.", TELEGRAM_BOT_TOKEN)
+                            clear_processing_state(file_id)
+                            return jsonify({"status": "error", "msg": "Failed to download file"}), 500
                     
-                    # Extract file extension to ensure proper loading
-                    file_extension = os.path.splitext(file_name)[1].lower()
+                    print(f"File downloaded successfully, size: {file_data['size']} bytes")
+                    # Add telegram_id to file_data for tracking
+                    file_data['telegram_id'] = chat_id
+                    # Save to storage and get URL
+                    model_url = db.save_model(file_data, BASE_URL)
                     
-                    # Create multiple Telegram link formats for better compatibility
-                    # Format 1: Standard t.me link with startapp parameter
-                    # This format is supposed to pass the parameter via start_param but might not be working correctly
-                    # miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
-                    
-                    # Using a different format that might be more compatible with Telegram WebApps
-                    # Instead of using startapp, use a format that focuses on the bot username with the WebApp command
-                    miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
-                    
-                    # Format 2: Direct link to the miniapp with UUID in the query
-                    direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
-                    
-                    # Format 3: Direct link to the miniapp with model parameter
-                    model_direct_url = f"{BASE_URL}/miniapp?model={model_url}"
-                    
-                    # For debugging, log the URLs
-                    print(f"Generated Mini App URL: {miniapp_url}")
-                    print(f"Generated direct miniapp URL: {direct_miniapp_url}")
-                    print(f"Generated model direct URL: {model_direct_url}")
-                    print(f"File extension: {file_extension}")
-                    
-                    # Send message with options
-                    response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
-                    
-                    # Create a combined keyboard with both options
-                    keyboard = {
-                        'inline_keyboard': [
-                            [
-                                {
-                                    'text': '📱 Open in Axiscore (Recommended)',
-                                    'web_app': {
-                                        'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                    if model_url:
+                        print(f"Model saved successfully, URL: {model_url}")
+                        # Get the bot username for creating the Mini App URL
+                        bot_info = get_bot_info(TELEGRAM_BOT_TOKEN)
+                        bot_username = bot_info.get('username', '') if bot_info else ''
+                        
+                        # Extract UUID from model_url for a cleaner parameter
+                        uuid_pattern = r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+                        uuid_match = re.search(uuid_pattern, model_url)
+                        model_uuid = uuid_match.group(1) if uuid_match else "unknown"
+                        
+                        # Extract file extension to ensure proper loading
+                        file_extension = os.path.splitext(file_name)[1].lower()
+                        
+                        # Create multiple Telegram link formats for better compatibility
+                        # Format 1: Standard t.me link with startapp parameter
+                        # This format is supposed to pass the parameter via start_param but might not be working correctly
+                        # miniapp_url = f"https://t.me/{bot_username}/app?startapp={model_uuid}"
+                        
+                        # Using a different format that might be more compatible with Telegram WebApps
+                        # Instead of using startapp, use a format that focuses on the bot username with the WebApp command
+                        miniapp_url = f"https://t.me/{bot_username}?start={model_uuid}"
+                        
+                        # Format 2: Direct link to the miniapp with UUID in the query
+                        direct_miniapp_url = f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                        
+                        # Format 3: Direct link to the miniapp with model parameter
+                        model_direct_url = f"{BASE_URL}/miniapp?model={model_url}"
+                        
+                        # For debugging, log the URLs
+                        print(f"Generated Mini App URL: {miniapp_url}")
+                        print(f"Generated direct miniapp URL: {direct_miniapp_url}")
+                        print(f"Generated model direct URL: {model_direct_url}")
+                        print(f"File extension: {file_extension}")
+                        
+                        # Send message with options
+                        response_text = f"3D model received: {file_name}\n\nUse one of the buttons below to view it:"
+                        
+                        # Create a combined keyboard with both options
+                        keyboard = {
+                            'inline_keyboard': [
+                                [
+                                    {
+                                        'text': '📱 Open in Axiscore (Recommended)',
+                                        'web_app': {
+                                            'url': f"{BASE_URL}/miniapp?uuid={model_uuid}&ext={file_extension}"
+                                        }
                                     }
-                                }
-                            ],
-                            [
-                                {
-                                    'text': '🌐 Open in Browser',
-                                    'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
-                                }
+                                ],
+                                [
+                                    {
+                                        'text': '🌐 Open in Browser',
+                                        'url': f"https://wellb3tz.github.io/axiscore/?model={BASE_URL}{model_url}"
+                                    }
+                                ]
                             ]
-                        ]
-                    }
-                    
-                    # Send the message with combined keyboard
-                    send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
-                    
-                    # Remove from processing set after success
+                        }
+                        
+                        # Send the message with combined keyboard
+                        send_webapp_button(chat_id, response_text, keyboard, TELEGRAM_BOT_TOKEN)
+                        
+                        # Remove from processing set after success
+                        clear_processing_state(file_id)
+                        return jsonify({"status": "ok"}), 200
+                    else:
+                        print("Failed to save model to storage")
+                        send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
+                        clear_processing_state(file_id)
+                except psycopg2.Error as dbe:
+                    print(f"Database error processing 3D model: {dbe}")
+                    send_message(chat_id, f"Database error: {str(dbe)[:100]}. Please contact the administrator.", TELEGRAM_BOT_TOKEN)
                     clear_processing_state(file_id)
-                    return jsonify({"status": "ok"}), 200
-                else:
-                    print("Failed to save model to storage")
-                    send_message(chat_id, "Failed to store your 3D model. Database error.", TELEGRAM_BOT_TOKEN)
+                except Exception as e:
+                    import traceback
+                    print(f"Error processing 3D model: {e}")
+                    print(traceback.format_exc())
+                    send_message(chat_id, "Failed to process your 3D model. Please try again.", TELEGRAM_BOT_TOKEN)
                     clear_processing_state(file_id)
-            except psycopg2.Error as dbe:
-                print(f"Database error processing 3D model: {dbe}")
-                send_message(chat_id, f"Database error: {str(dbe)[:100]}. Please contact the administrator.", TELEGRAM_BOT_TOKEN)
-                clear_processing_state(file_id)
-            except Exception as e:
-                import traceback
-                print(f"Error processing 3D model: {e}")
-                print(traceback.format_exc())
-                send_message(chat_id, "Failed to process your 3D model. Please try again.", TELEGRAM_BOT_TOKEN)
-                clear_processing_state(file_id)
+            else:
+                send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).", TELEGRAM_BOT_TOKEN)
+        # Handle text messages
         else:
-            send_message(chat_id, "Please send a 3D model file (.glb, .gltf, or .fbx).", TELEGRAM_BOT_TOKEN)
-    # Handle text messages
-    else:
-        # Check for specific commands
-        if text.lower() == '/start':
-            response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, .fbx, or .obj) or an archive (.rar, .zip, .7z) containing 3D models, and I'll generate an interactive preview for you."
-        elif text.lower() == '/help':
-            response_text = """
+            # Check for specific commands
+            if text.lower() == '/start':
+                response_text = "Welcome to Axiscore 3D Model Viewer! You can send me a 3D model file (.glb, .gltf, .fbx, or .obj) or an archive (.rar, .zip, .7z) containing 3D models, and I'll generate an interactive preview for you."
+            elif text.lower() == '/help':
+                response_text = """
 Axiscore 3D Model Viewer Help:
 • Send a 3D model file (.glb, .gltf, .fbx, or .obj) directly to this chat
 • Or upload an archive (.rar, .zip, .7z) containing 3D models
@@ -602,84 +627,84 @@ Axiscore 3D Model Viewer Help:
 • Click "Open in Axiscore" to view and interact with your model
 • Use pinch/scroll to zoom, drag to rotate
 • If you're stuck in a processing loop, use /reset command
-            """
-        elif text.lower() == '/reset':
-            current_time = datetime.now().timestamp()
-            
-            # Reset failed archives for this user
-            if db.ensure_connection():
-                db.execute(
-                    "DELETE FROM failed_archives WHERE telegram_id = %s",
-                    (chat_id,)
-                )
-                db.commit()
+                """
+            elif text.lower() == '/reset':
+                current_time = datetime.now().timestamp()
                 
-                # Also clear any processing locks for this user
-                file_ids_to_remove = list(PROCESSING_FILES)
-                
-                for file_id in file_ids_to_remove:
-                    clear_processing_state(file_id)
-                
-                # Check if this is a rapid reset (within 60 seconds of previous reset)
-                # If so, enable the circuit breaker as an emergency measure
-                if current_time - LAST_RESET_TIME < 60:
-                    IGNORE_ALL_ARCHIVES = True
-                    response_text = f"🚨 EMERGENCY RESET detected! Archive processing has been disabled as a circuit breaker. Cleared {len(file_ids_to_remove)} processing locks."
-                else:
-                    response_text = f"Reset successful. Cleared {len(file_ids_to_remove)} processing locks. Any archives that previously failed can now be processed again."
-                
-                # Update last reset time
-                LAST_RESET_TIME = current_time
-            else:
-                response_text = "Could not reset due to database connection issues. Please try again later."
-        elif text.lower() == '/enable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            IGNORE_ALL_ARCHIVES = False
-            response_text = "Archive processing has been re-enabled."
-        elif text.lower() == '/disable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            IGNORE_ALL_ARCHIVES = True
-            response_text = "Archive processing has been disabled (circuit breaker active)."
-        elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            # Special admin command to initialize the failed_archives table and add problematic files
-            if db.ensure_connection():
-                # Make sure the table exists
-                db.cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS failed_archives (
-                        id SERIAL PRIMARY KEY,
-                        file_id TEXT NOT NULL UNIQUE,
-                        filename TEXT NOT NULL,
-                        error TEXT NOT NULL,
-                        telegram_id TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                db.commit()
-                
-                # Add any known problematic files by file_id - add the 3D Oasis - Skateboards.rar file
-                try:
+                # Reset failed archives for this user
+                if db.ensure_connection():
                     db.execute(
-                        "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
-                        ("problematic_file_id", "3D Oasis - Skateboards.rar", "utf-8 codec can't decode byte", chat_id)
+                        "DELETE FROM failed_archives WHERE telegram_id = %s",
+                        (chat_id,)
                     )
                     db.commit()
-                    response_text = "Admin cleanup completed. Known problematic files have been added to the block list."
-                except Exception as e:
-                    response_text = f"Admin cleanup encountered an error: {str(e)}"
-            else:
-                response_text = "Could not perform admin cleanup due to database connection issues."
-        elif text.lower() == '/status':
-            # Show current processing status for debugging
-            processing_count = len(PROCESSING_FILES)
-            circuit_breaker = "🔴 ACTIVE" if IGNORE_ALL_ARCHIVES else "🟢 Inactive"
-            current_time = datetime.now().timestamp()
-            
-            # List all file IDs being processed (truncate if too many)
-            processing_files_list = list(PROCESSING_FILES)
-            if len(processing_files_list) > 5:
-                files_str = ", ".join(processing_files_list[:5]) + f" and {len(processing_files_list) - 5} more"
-            else:
-                files_str = ", ".join(processing_files_list) if processing_files_list else "None"
+                    
+                    # Also clear any processing locks for this user
+                    file_ids_to_remove = list(PROCESSING_FILES)
+                    
+                    for file_id in file_ids_to_remove:
+                        clear_processing_state(file_id)
+                    
+                    # Check if this is a rapid reset (within 60 seconds of previous reset)
+                    # If so, enable the circuit breaker as an emergency measure
+                    if current_time - LAST_RESET_TIME < 60:
+                        IGNORE_ALL_ARCHIVES = True
+                        response_text = f"🚨 EMERGENCY RESET detected! Archive processing has been disabled as a circuit breaker. Cleared {len(file_ids_to_remove)} processing locks."
+                    else:
+                        response_text = f"Reset successful. Cleared {len(file_ids_to_remove)} processing locks. Any archives that previously failed can now be processed again."
+                    
+                    # Update last reset time
+                    LAST_RESET_TIME = current_time
+                else:
+                    response_text = "Could not reset due to database connection issues. Please try again later."
+            elif text.lower() == '/enable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+                IGNORE_ALL_ARCHIVES = False
+                response_text = "Archive processing has been re-enabled."
+            elif text.lower() == '/disable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+                IGNORE_ALL_ARCHIVES = True
+                response_text = "Archive processing has been disabled (circuit breaker active)."
+            elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+                # Special admin command to initialize the failed_archives table and add problematic files
+                if db.ensure_connection():
+                    # Make sure the table exists
+                    db.cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS failed_archives (
+                            id SERIAL PRIMARY KEY,
+                            file_id TEXT NOT NULL UNIQUE,
+                            filename TEXT NOT NULL,
+                            error TEXT NOT NULL,
+                            telegram_id TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                    db.commit()
+                    
+                    # Add any known problematic files by file_id - add the 3D Oasis - Skateboards.rar file
+                    try:
+                        db.execute(
+                            "INSERT INTO failed_archives (file_id, filename, error, telegram_id) VALUES (%s, %s, %s, %s) ON CONFLICT (file_id) DO NOTHING",
+                            ("problematic_file_id", "3D Oasis - Skateboards.rar", "utf-8 codec can't decode byte", chat_id)
+                        )
+                        db.commit()
+                        response_text = "Admin cleanup completed. Known problematic files have been added to the block list."
+                    except Exception as e:
+                        response_text = f"Admin cleanup encountered an error: {str(e)}"
+                else:
+                    response_text = "Could not perform admin cleanup due to database connection issues."
+            elif text.lower() == '/status':
+                # Show current processing status for debugging
+                processing_count = len(PROCESSING_FILES)
+                circuit_breaker = "🔴 ACTIVE" if IGNORE_ALL_ARCHIVES else "🟢 Inactive"
+                current_time = datetime.now().timestamp()
                 
-            response_text = f"""System status:
+                # List all file IDs being processed (truncate if too many)
+                processing_files_list = list(PROCESSING_FILES)
+                if len(processing_files_list) > 5:
+                    files_str = ", ".join(processing_files_list[:5]) + f" and {len(processing_files_list) - 5} more"
+                else:
+                    files_str = ", ".join(processing_files_list) if processing_files_list else "None"
+                    
+                response_text = f"""System status:
 - Files being processed: {processing_count}
 - Processing files: {files_str}
 - Circuit breaker: {circuit_breaker}
@@ -688,35 +713,20 @@ Axiscore 3D Model Viewer Help:
 Commands:
 - /reset - Clear processing queue and failed archives
 - /status - Show this status message"""
-        elif text.lower().startswith('/clear ') and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            # Allow admins to clear specific file_id
-            try:
-                file_id = text.split(' ')[1].strip()
-                if file_id in PROCESSING_FILES:
-                    clear_processing_state(file_id)
-                    response_text = f"Cleared processing lock for file: {file_id}"
-                else:
-                    response_text = f"File ID not found in processing list: {file_id}"
-            except:
-                response_text = "Usage: /clear file_id"
-        elif text.lower() == '/emergency_stop' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
-            # This is a nuclear option - stops all archive processing
-            IGNORE_ALL_ARCHIVES = True
-            
-            # Clear ALL processing
-            file_ids_to_remove = list(PROCESSING_FILES)
-            for file_id in file_ids_to_remove:
-                clear_processing_state(file_id)
-            
-            # Clear ALL failed archives
-            if db.ensure_connection():
-                db.execute("DELETE FROM failed_archives")
-                db.commit()
-            
-            response_text = f"🚨 EMERGENCY STOP executed! All archive processing disabled and {len(file_ids_to_remove)} processing locks cleared. Use /enable_archives to re-enable when safe."
-        elif text.lower() == '/debug_help' or text.lower() == '/emergency':
-            # Emergency help when bot is stuck in a loop
-            response_text = """🚨 EMERGENCY COMMANDS:
+            elif text.lower().startswith('/clear ') and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+                # Allow admins to clear specific file_id
+                try:
+                    file_id = text.split(' ')[1].strip()
+                    if file_id in PROCESSING_FILES:
+                        clear_processing_state(file_id)
+                        response_text = f"Cleared processing lock for file: {file_id}"
+                    else:
+                        response_text = f"File ID not found in processing list: {file_id}"
+                except:
+                    response_text = "Usage: /clear file_id"
+            elif text.lower() == '/debug_help' or text.lower() == '/emergency':
+                # Emergency help when bot is stuck in a loop
+                response_text = """🚨 EMERGENCY COMMANDS:
 
 If the bot is stuck in a processing loop, use one of these commands:
 • /911 or /sos or /stop_all - Emergency stop (breaks any processing loop)
@@ -724,13 +734,28 @@ If the bot is stuck in a processing loop, use one of these commands:
 • /status - Show current processing status
 
 These commands work even when the bot appears stuck. If the bot is completely unresponsive, please contact the administrator."""
-        else:
-            # Generic response for other messages
-            response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
+            else:
+                # Generic response for other messages
+                response_text = f"Send me a 3D model file (.glb, .gltf, .fbx, .obj) or an archive containing 3D models (.rar, .zip, .7z) to view it in Axiscore. You said: {text}"
+            
+            send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+            
+            return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        # Global error handler for the entire webhook
+        error_msg = f"Webhook processing error: {str(e)}"
+        print(error_msg)
         
-        send_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+        # Try to notify the user if we have a chat_id
+        if 'chat_id' in locals() and chat_id:
+            try:
+                send_message(chat_id, "Sorry, an error occurred processing your request. Please try again later.", TELEGRAM_BOT_TOKEN)
+            except:
+                pass
         
-        return jsonify({"status": "ok"}), 200
+        # Return error response
+        return jsonify({"status": "error", "message": error_msg}), 500
 
 @app.route('/view', methods=['GET'])
 def view_model():
