@@ -677,10 +677,10 @@ Axiscore 3D Model Viewer Help:
                     LAST_RESET_TIME = current_time
                 else:
                     response_text = "Could not reset due to database connection issues. Please try again later."
-            elif text.lower() == '/enable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            elif text.lower() == '/enable_archives':
                 IGNORE_ALL_ARCHIVES = False
                 response_text = "Archive processing has been re-enabled."
-            elif text.lower() == '/disable_archives' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
+            elif text.lower() == '/disable_archives':
                 IGNORE_ALL_ARCHIVES = True
                 response_text = "Archive processing has been disabled (circuit breaker active)."
             elif text.lower() == '/admin_cleanup' and str(chat_id) in ADMIN_CHAT_IDS.split(','):
